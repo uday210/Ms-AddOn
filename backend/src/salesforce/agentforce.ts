@@ -1,15 +1,16 @@
 import crypto from "crypto";
 import { clearToken, getAccessToken } from "./auth";
 
-// Agentforce Sessions API lives on api.salesforce.com, not the org instance URL.
-// The sf CLI tries these prefixes in order: api., test.api., dev.api.
-const API_BASES = [
+// Agentforce Sessions API — sf CLI tries api., test.api., dev.api. prefixes,
+// then falls back to the org instance URL.
+const getApiBases = () => [
   "https://api.salesforce.com/einstein/ai-agent/v1",
   "https://test.api.salesforce.com/einstein/ai-agent/v1",
+  `${process.env.SF_INSTANCE_URL}/einstein/ai-agent/v1`,
 ];
 
 // Resolved base after a successful createSession — avoids re-probing on every message
-let resolvedBase = API_BASES[0];
+let resolvedBase = "https://api.salesforce.com/einstein/ai-agent/v1";
 
 function agentHeaders(token: string): Record<string, string> {
   return {
@@ -23,27 +24,32 @@ export async function createSession(): Promise<string> {
   const token = await getAccessToken();
   let lastError = "";
 
-  for (const base of API_BASES) {
-    const res = await fetch(
-      `${base}/agents/${process.env.SF_AGENT_ID}/sessions`,
-      {
-        method: "POST",
-        headers: agentHeaders(token),
-        body: JSON.stringify({
-          externalSessionKey: crypto.randomUUID(),
-          instanceConfig: { endpoint: process.env.SF_INSTANCE_URL },
-          streamingCapabilities: { chunkTypes: ["Text"] },
-          bypassUser: true,
-        }),
-      }
-    );
+  for (const base of getApiBases()) {
+    let res: Response;
+    try {
+      res = await fetch(
+        `${base}/agents/${process.env.SF_AGENT_ID}/sessions`,
+        {
+          method: "POST",
+          headers: agentHeaders(token),
+          body: JSON.stringify({
+            externalSessionKey: crypto.randomUUID(),
+            instanceConfig: { endpoint: process.env.SF_INSTANCE_URL },
+            streamingCapabilities: { chunkTypes: ["Text"] },
+            bypassUser: true,
+          }),
+        }
+      );
+    } catch (networkErr) {
+      lastError = `createSession network error (${base}): ${networkErr}`;
+      console.warn(`[agentforce] ${lastError} — trying next base`);
+      continue;
+    }
 
     if (!res.ok) {
       const body = await res.text();
-      if (res.status === 401) clearToken();
+      if (res.status === 401) { clearToken(); throw new Error(`createSession 401: ${body}`); }
       lastError = `createSession ${res.status} (${base}): ${body}`;
-      // 404 means wrong endpoint — try next; other errors are terminal
-      if (res.status !== 404) throw new Error(lastError);
       console.warn(`[agentforce] ${lastError} — trying next base`);
       continue;
     }

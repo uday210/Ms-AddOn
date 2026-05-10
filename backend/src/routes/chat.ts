@@ -63,8 +63,10 @@ router.post("/", async (req: Request, res: Response) => {
 
     res.json(response);
   } catch (err) {
-    console.error("[chat] error:", err);
-    res.status(500).json({ error: (err as Error).message });
+    const e = err as Error & { cause?: unknown };
+    console.error("[chat] error:", e.message, e.cause ?? "");
+    const detail = e.cause ? `${e.message}: ${String(e.cause)}` : e.message;
+    res.status(500).json({ error: detail });
   }
 });
 

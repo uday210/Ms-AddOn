@@ -1,0 +1,5 @@
+# Outlook add-in and backend — not Salesforce metadata
+outlook-addin/
+backend/
+node_modules/
+.env

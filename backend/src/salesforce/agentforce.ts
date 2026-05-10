@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import axios, { AxiosError } from "axios";
+import axios from "axios";
 import { clearToken, getAccessToken } from "./auth";
 
 // Agentforce Sessions API — sf CLI tries api., test.api., dev.api. prefixes.
@@ -38,23 +38,26 @@ export async function createSession(): Promise<string> {
         { headers: agentHeaders(token), validateStatus: () => true }
       );
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = res.data as any;
+
       if (res.status === 401) {
         clearToken();
-        throw new Error(`createSession 401: ${JSON.stringify(res.data)}`);
+        throw new Error(`createSession 401: ${JSON.stringify(data)}`);
       }
 
       if (res.status !== 200 && res.status !== 201) {
-        lastError = `createSession ${res.status} (${base}): ${JSON.stringify(res.data)}`;
+        lastError = `createSession ${res.status} (${base}): ${JSON.stringify(data)}`;
         console.warn(`[agentforce] ${lastError} — trying next base`);
         continue;
       }
 
       resolvedBase = base;
-      const sessionId: string = res.data.sessionId;
+      const sessionId: string = data.sessionId;
       console.log("[agentforce] session created via", base, ":", sessionId);
       return sessionId;
     } catch (err) {
-      const ae = err as AxiosError;
+      const ae = err as { response?: unknown; message?: string };
       // Only continue to next base if it's a network error (no response)
       if (!ae.response) {
         lastError = `createSession network error (${base}): ${ae.message}`;

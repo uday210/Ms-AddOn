@@ -1,8 +1,9 @@
 import crypto from "crypto";
+import axios, { AxiosError } from "axios";
 import { clearToken, getAccessToken } from "./auth";
 
-// Agentforce Sessions API — sf CLI tries api., test.api., dev.api. prefixes,
-// then falls back to the org instance URL.
+// Agentforce Sessions API — sf CLI tries api., test.api., dev.api. prefixes.
+// Railway's undici-based fetch can't reach api.salesforce.com; axios (http/https module) can.
 const getApiBases = () => [
   "https://api.salesforce.com/einstein/ai-agent/v1",
   "https://test.api.salesforce.com/einstein/ai-agent/v1",
@@ -25,39 +26,43 @@ export async function createSession(): Promise<string> {
   let lastError = "";
 
   for (const base of getApiBases()) {
-    let res: Response;
     try {
-      res = await fetch(
+      const res = await axios.post(
         `${base}/agents/${process.env.SF_AGENT_ID}/sessions`,
         {
-          method: "POST",
-          headers: agentHeaders(token),
-          body: JSON.stringify({
-            externalSessionKey: crypto.randomUUID(),
-            instanceConfig: { endpoint: process.env.SF_INSTANCE_URL },
-            streamingCapabilities: { chunkTypes: ["Text"] },
-            bypassUser: true,
-          }),
-        }
+          externalSessionKey: crypto.randomUUID(),
+          instanceConfig: { endpoint: process.env.SF_INSTANCE_URL },
+          streamingCapabilities: { chunkTypes: ["Text"] },
+          bypassUser: true,
+        },
+        { headers: agentHeaders(token), validateStatus: () => true }
       );
-    } catch (networkErr) {
-      lastError = `createSession network error (${base}): ${networkErr}`;
-      console.warn(`[agentforce] ${lastError} — trying next base`);
-      continue;
-    }
 
-    if (!res.ok) {
-      const body = await res.text();
-      if (res.status === 401) { clearToken(); throw new Error(`createSession 401: ${body}`); }
-      lastError = `createSession ${res.status} (${base}): ${body}`;
-      console.warn(`[agentforce] ${lastError} — trying next base`);
-      continue;
-    }
+      if (res.status === 401) {
+        clearToken();
+        throw new Error(`createSession 401: ${JSON.stringify(res.data)}`);
+      }
 
-    const data = await res.json() as { sessionId: string };
-    resolvedBase = base;
-    console.log("[agentforce] session created via", base, ":", data.sessionId);
-    return data.sessionId;
+      if (res.status !== 200 && res.status !== 201) {
+        lastError = `createSession ${res.status} (${base}): ${JSON.stringify(res.data)}`;
+        console.warn(`[agentforce] ${lastError} — trying next base`);
+        continue;
+      }
+
+      resolvedBase = base;
+      const sessionId: string = res.data.sessionId;
+      console.log("[agentforce] session created via", base, ":", sessionId);
+      return sessionId;
+    } catch (err) {
+      const ae = err as AxiosError;
+      // Only continue to next base if it's a network error (no response)
+      if (!ae.response) {
+        lastError = `createSession network error (${base}): ${ae.message}`;
+        console.warn(`[agentforce] ${lastError} — trying next base`);
+        continue;
+      }
+      throw err;
+    }
   }
 
   throw new Error(lastError || "createSession failed: all API bases exhausted");
@@ -69,40 +74,32 @@ export async function sendMessage(
   sequenceId: number
 ): Promise<string> {
   const token = await getAccessToken();
-  const res = await fetch(`${resolvedBase}/sessions/${sfSessionId}/messages`, {
-    method: "POST",
-    headers: { ...agentHeaders(token), Accept: "application/json" },
-    body: JSON.stringify({
-      message: { sequenceId, type: "Text", text },
-      variables: [],
-    }),
-  });
+  const res = await axios.post(
+    `${resolvedBase}/sessions/${sfSessionId}/messages`,
+    { message: { sequenceId, type: "Text", text }, variables: [] },
+    {
+      headers: { ...agentHeaders(token), Accept: "application/json" },
+      validateStatus: () => true,
+    }
+  );
 
-  if (!res.ok) {
-    const body = await res.text();
-    if (res.status === 401) clearToken();
-    throw new Error(`sendMessage ${res.status}: ${body}`);
+  if (res.status === 401) { clearToken(); throw new Error(`sendMessage 401`); }
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`sendMessage ${res.status}: ${JSON.stringify(res.data)}`);
   }
 
-  const contentType = res.headers.get("content-type") ?? "";
-  const raw = await res.text();
-
+  const contentType = String(res.headers["content-type"] ?? "");
   if (contentType.includes("text/event-stream")) {
-    return parseSSE(raw);
+    return parseSSE(typeof res.data === "string" ? res.data : JSON.stringify(res.data));
   }
 
-  try {
-    return extractText(JSON.parse(raw));
-  } catch {
-    return raw;
-  }
+  return extractText(res.data as Record<string, unknown>);
 }
 
 export async function endSession(sfSessionId: string): Promise<void> {
   try {
     const token = await getAccessToken();
-    await fetch(`${resolvedBase}/sessions/${sfSessionId}`, {
-      method: "DELETE",
+    await axios.delete(`${resolvedBase}/sessions/${sfSessionId}`, {
       headers: agentHeaders(token),
     });
     console.log("[agentforce] session ended:", sfSessionId);
@@ -134,5 +131,5 @@ function extractText(data: Record<string, unknown>): string {
       .filter(Boolean)
       .join("\n");
   }
-  return "";
+  return JSON.stringify(data);
 }

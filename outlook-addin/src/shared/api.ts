@@ -1,9 +1,8 @@
 import { EmailContext } from "./office";
 
 declare const __BACKEND_URL__: string;
-const BACKEND_URL = (typeof __BACKEND_URL__ !== "undefined" && __BACKEND_URL__)
-  ? __BACKEND_URL__
-  : "http://localhost:3001";
+// Development: "http://localhost:3001"  Production (same host): ""
+const BACKEND_URL = typeof __BACKEND_URL__ !== "undefined" ? __BACKEND_URL__ : "http://localhost:3001";
 
 export interface ChatRequest {
   emailContext: EmailContext;

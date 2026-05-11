@@ -20,8 +20,10 @@ global class AgentProxyController {
                                   : 0;
             Map<String, Object> emailCtx = (Map<String, Object>) body.get('emailContext');
 
-            // Use the OAuth token that was used to call this endpoint
-            String token = UserInfo.getSessionId();
+            // Prefer the token passed from the backend (has einstein_gpt_api scope).
+            // UserInfo.getSessionId() returns a session ID that may lack that scope.
+            String passedToken = (String) body.get('accessToken');
+            String token = String.isNotBlank(passedToken) ? passedToken : UserInfo.getSessionId();
 
             // Create session if this is the first message
             if (String.isBlank(sfSessionId)) {

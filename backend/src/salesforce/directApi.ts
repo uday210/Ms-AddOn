@@ -35,8 +35,45 @@ interface ExtractedIntent {
   noteText?: string;
 }
 
-// ── Claude: extract intent + key entities from email + user message ──────────
+// ── Regex-based intent extraction (no API key needed) ────────────────────────
+function extractIntentRegex(userMsg: string, email: EmailCtx): ExtractedIntent {
+  const all = `${userMsg} ${email.subject} ${email.body}`.toLowerCase();
+  const src = `${userMsg} ${email.body}`;
+
+  // Action
+  let action: ExtractedIntent["action"] = "unknown";
+  if (/draft|reply|compose/i.test(userMsg)) action = "draft_reply";
+  else if (/log|note|record|document/i.test(userMsg)) action = "log_note";
+  else if (/update|extend|push|change.*date|date.*change/i.test(userMsg)) action = "update_date";
+  else if (/summar|detail|status|overview/i.test(userMsg)) action = "summary";
+  else if (/find|look.?up|which project|project related/i.test(userMsg)) action = "find";
+
+  // Project name — "project name : XYZ" anywhere in body or message
+  let projectName: string | undefined;
+  const nameMatch = src.match(/project\s+name\s*[:\-;]\s*([^\n\r,;.]{3,80})/i);
+  if (nameMatch) projectName = nameMatch[1].trim();
+
+  // Months
+  const monthMatch = all.match(/(\d+)\s*(?:more\s+)?months?/i);
+  const monthsToAdd = monthMatch ? parseInt(monthMatch[1]) : undefined;
+
+  // Weeks
+  const weekMatch = all.match(/(\d+)\s*(?:more\s+)?weeks?/i);
+  const weeksToAdd = weekMatch ? parseInt(weekMatch[1]) : undefined;
+
+  // Explicit date
+  const dateMatch = src.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  const newDate = dateMatch ? dateMatch[1] : undefined;
+
+  return { action, projectName, newDate, monthsToAdd, weeksToAdd };
+}
+
+// ── Claude: extract intent + key entities (used if ANTHROPIC_API_KEY is set) ─
 async function extractIntent(userMsg: string, email: EmailCtx): Promise<ExtractedIntent> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return extractIntentRegex(userMsg, email);
+  }
+
   const prompt = `You are a sales assistant parsing an email and a user's request.
 
 EMAIL SUBJECT: ${email.subject}
@@ -70,9 +107,9 @@ Rules:
     });
     const text = (msg.content[0] as { type: string; text: string }).text.trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    return jsonMatch ? JSON.parse(jsonMatch[0]) : { action: "unknown" };
+    return jsonMatch ? JSON.parse(jsonMatch[0]) : extractIntentRegex(userMsg, email);
   } catch {
-    return { action: "unknown" };
+    return extractIntentRegex(userMsg, email);
   }
 }
 

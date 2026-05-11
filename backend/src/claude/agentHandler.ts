@@ -1,18 +1,19 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { findProjects, sfUpdate, sfCreate, SFProject } from "../salesforce/directApi";
+import { findProjects, soqlQuery, sfUpdate, sfCreate, SFProject } from "../salesforce/directApi";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const SYSTEM_PROMPT = `You are a Sales Copilot assistant embedded in Microsoft Outlook. You help sales reps manage their Salesforce projects directly from email — quickly and concisely.
 
-You have tools to look up projects and propose write actions (updates, notes). Write actions always require the user to confirm before they execute.
+You have tools to look up projects, list all projects, and propose write actions (updates, notes). Write actions always require the user to confirm before they execute.
 
 Guidelines:
 - Extract the project name from the email context if the user does not specify one.
-- After finding a project, show a brief summary: name, account, status, end date.
-- When proposing a date update, always use the exact date the user specifies.
-- Parse dates like "1 Jan 2030", "January 1 2030", "2030-01-01" correctly.
-- Keep replies short — 2-4 sentences max.
+- After finding a project, show a concise markdown table summary: name, account, status, end date.
+- When proposing a date update, always use the exact date the user specifies. Parse natural dates correctly (e.g. "1 Jan 2030" → 2030-01-01).
+- When listing all projects, show them in a clean markdown table with Name, Account, Status, End Date columns.
+- For draft replies, write a professional, concise email reply referencing project details.
+- Keep non-table replies short — 2-4 sentences max.
 - Today's date: ${new Date().toISOString().slice(0, 10)}.`;
 
 const TOOLS: Anthropic.Tool[] = [
@@ -39,6 +40,17 @@ const TOOLS: Anthropic.Tool[] = [
         newEndDate:     { type: "string", description: "New date to set (YYYY-MM-DD)" },
       },
       required: ["projectId", "projectName", "newEndDate"],
+    },
+  },
+  {
+    name: "list_all_projects",
+    description: "List all Salesforce projects, optionally filtered by status. Use when the user asks to see all projects or list projects.",
+    input_schema: {
+      type: "object",
+      properties: {
+        statusFilter: { type: "string", description: "Optional: filter by Status__c value e.g. 'Active', 'On Hold', 'Completed'" },
+      },
+      required: [],
     },
   },
   {
@@ -157,6 +169,14 @@ export async function runAgent(
           resultText = results.length
             ? JSON.stringify(results)
             : `No projects found matching "${input.name}".`;
+
+        } else if (block.name === "list_all_projects") {
+          const statusFilter = input.statusFilter as string | undefined;
+          const where = statusFilter ? `WHERE Status__c = '${statusFilter.replace(/'/g, "\\'")}'` : "";
+          const records = await soqlQuery<SFProject>(
+            `SELECT Id, Name, Status__c, End_Date__c, Account__r.Name FROM Project__c ${where} ORDER BY Name LIMIT 20`
+          );
+          resultText = records.length ? JSON.stringify(records) : "No projects found.";
 
         } else if (block.name === "propose_update_end_date") {
           pendingProposal = {

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react"; // useRef kept for bottomRef scroll
 import { sendMessage } from "../../shared/api";
+import { MarkdownText } from "../../shared/markdown";
 import { EmailContext } from "../../shared/office";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SuggestionChips } from "./SuggestionChips";
@@ -20,7 +21,7 @@ export function ChatPanel({ emailContext }: Props) {
     {
       id: "welcome",
       role: "agent",
-      text: "Hi! I'm your Sales Copilot. I can look up projects, update dates, log notes, and draft replies — all from this email. What would you like to do?",
+      text: "Hi! I'm your **Sales Copilot**. I can look up projects, update dates, log notes, and draft replies — all without leaving Outlook. What would you like to do?",
       ts: Date.now(),
     },
   ]);
@@ -41,47 +42,29 @@ export function ChatPanel({ emailContext }: Props) {
   async function send(userMessage: string) {
     if (!userMessage.trim() || loading || !emailContext) return;
 
-    const userMsg: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
-      text: userMessage.trim(),
-      ts: Date.now(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages((prev) => [...prev, {
+      id: crypto.randomUUID(), role: "user", text: userMessage.trim(), ts: Date.now(),
+    }]);
     setInput("");
     setLoading(true);
 
     try {
-      const res = await sendMessage({
-        emailContext,
-        userMessage: userMessage.trim(),
-        sessionId,
-      });
-
+      const res = await sendMessage({ emailContext, userMessage: userMessage.trim(), sessionId });
       setSessionId(res.sessionId);
 
       if (res.requiresConfirm && res.proposedAction) {
-        setPendingConfirm({
-          description: res.proposedAction.description,
-          payload: res.proposedAction.payload,
-        });
+        setPendingConfirm({ description: res.proposedAction.description, payload: res.proposedAction.payload });
       }
 
-      const agentMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "agent",
-        text: res.reply,
-        ts: Date.now(),
-      };
-      setMessages((prev) => [...prev, agentMsg]);
+      setMessages((prev) => [...prev, {
+        id: crypto.randomUUID(), role: "agent", text: res.reply, ts: Date.now(),
+      }]);
     } catch (err) {
-      const errMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "agent",
-        text: `Something went wrong: ${(err as Error).message}`,
+      setMessages((prev) => [...prev, {
+        id: crypto.randomUUID(), role: "agent",
+        text: `⚠️ Something went wrong: ${(err as Error).message}`,
         ts: Date.now(),
-      };
-      setMessages((prev) => [...prev, errMsg]);
+      }]);
     } finally {
       setLoading(false);
     }
@@ -94,30 +77,19 @@ export function ChatPanel({ emailContext }: Props) {
 
     try {
       const res = await sendMessage({
-        emailContext,
-        userMessage: "",
-        sessionId,
-        confirmed: true,
-        proposedAction: pendingConfirm.payload,
+        emailContext, userMessage: "", sessionId,
+        confirmed: true, proposedAction: pendingConfirm.payload,
       });
-
       setSessionId(res.sessionId);
-
-      const agentMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "agent",
-        text: res.reply,
-        ts: Date.now(),
-      };
-      setMessages((prev) => [...prev, agentMsg]);
+      setMessages((prev) => [...prev, {
+        id: crypto.randomUUID(), role: "agent", text: res.reply, ts: Date.now(),
+      }]);
     } catch (err) {
-      const errMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "agent",
-        text: `Error confirming action: ${(err as Error).message}`,
+      setMessages((prev) => [...prev, {
+        id: crypto.randomUUID(), role: "agent",
+        text: `⚠️ Error: ${(err as Error).message}`,
         ts: Date.now(),
-      };
-      setMessages((prev) => [...prev, errMsg]);
+      }]);
     } finally {
       setLoading(false);
     }
@@ -126,39 +98,32 @@ export function ChatPanel({ emailContext }: Props) {
   const isReady = !!emailContext && !loading;
 
   return (
-    <div style={styles.wrapper}>
+    <div style={s.wrapper}>
       <SuggestionChips onChipClick={send} disabled={!isReady} />
 
-      <div style={styles.messages}>
+      <div style={s.messages}>
         {messages.map((msg) => (
-          <div
-            key={msg.id}
-            style={{
-              ...styles.row,
-              flexDirection: msg.role === "user" ? "row-reverse" : "row",
-            }}
-          >
-            {msg.role === "agent" && (
-              <div style={styles.avatar}>⚡</div>
-            )}
-            <div
-              style={{
-                ...styles.bubble,
-                ...(msg.role === "user" ? styles.userBubble : styles.agentBubble),
-              }}
-            >
-              {msg.text}
+          <div key={msg.id} style={{ ...s.row, justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
+            {msg.role === "agent" && <AgentAvatar />}
+            <div style={{ ...s.bubble, ...(msg.role === "user" ? s.userBubble : s.agentBubble) }}>
+              {msg.role === "agent"
+                ? <MarkdownText text={msg.text} />
+                : msg.text
+              }
+              <div style={{ ...s.ts, color: msg.role === "user" ? "rgba(255,255,255,0.55)" : "#b0bac6" }}>
+                {new Date(msg.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </div>
             </div>
           </div>
         ))}
 
         {loading && (
-          <div style={{ ...styles.row, flexDirection: "row" }}>
-            <div style={styles.avatar}>⚡</div>
-            <div style={{ ...styles.bubble, ...styles.agentBubble, ...styles.typingBubble }}>
-              <span style={styles.dot} />
-              <span style={{ ...styles.dot, animationDelay: "0.15s" }} />
-              <span style={{ ...styles.dot, animationDelay: "0.3s" }} />
+          <div style={{ ...s.row, justifyContent: "flex-start" }}>
+            <AgentAvatar />
+            <div style={{ ...s.bubble, ...s.agentBubble, ...s.typingBubble }}>
+              <span style={s.dot} />
+              <span style={{ ...s.dot, animationDelay: "0.2s" }} />
+              <span style={{ ...s.dot, animationDelay: "0.4s" }} />
             </div>
           </div>
         )}
@@ -166,22 +131,25 @@ export function ChatPanel({ emailContext }: Props) {
         <div ref={bottomRef} />
       </div>
 
-      <div style={styles.inputBar}>
+      <div style={s.inputBar}>
         <input
-          style={styles.input}
-          placeholder={emailContext ? "Ask me anything about this email…" : "Loading email…"}
+          style={s.input}
+          placeholder={emailContext ? "Ask me anything about this email…" : "Loading email context…"}
           value={input}
           disabled={!isReady}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send(input)}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send(input)}
         />
         <button
-          style={{ ...styles.sendBtn, ...(!isReady || !input.trim() ? styles.sendBtnDisabled : {}) }}
+          style={{ ...s.sendBtn, ...(!isReady || !input.trim() ? s.sendBtnOff : {}) }}
           onClick={() => send(input)}
           disabled={!isReady || !input.trim()}
           aria-label="Send"
         >
-          ➤
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M22 2L15 22 11 13 2 9l20-7z" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
         </button>
       </div>
 
@@ -193,73 +161,89 @@ export function ChatPanel({ emailContext }: Props) {
         />
       )}
 
-      <style>{dotAnimation}</style>
+      <style>{dotAnim}</style>
     </div>
   );
 }
 
-const dotAnimation = `
+function AgentAvatar() {
+  return (
+    <div style={avs.avatar}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="#fff" strokeLinejoin="round"/>
+      </svg>
+    </div>
+  );
+}
+
+const avs: Record<string, React.CSSProperties> = {
+  avatar: {
+    width: 30,
+    height: 30,
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #0070d2, #032D60)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    boxShadow: "0 2px 8px rgba(0,112,210,0.3)",
+  },
+};
+
+const dotAnim = `
 @keyframes dotPulse {
-  0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+  0%, 80%, 100% { opacity: 0.2; transform: scale(0.75); }
   40% { opacity: 1; transform: scale(1); }
 }`;
 
-const styles: Record<string, React.CSSProperties> = {
+const s: Record<string, React.CSSProperties> = {
   wrapper: {
     display: "flex",
     flexDirection: "column",
     flex: 1,
     overflow: "hidden",
     position: "relative",
+    background: "#f4f6f9",
   },
   messages: {
     flex: 1,
     overflowY: "auto",
-    padding: "16px 14px",
+    padding: "14px 12px",
     display: "flex",
     flexDirection: "column",
-    gap: 12,
+    gap: 10,
   },
   row: {
     display: "flex",
     alignItems: "flex-end",
     gap: 8,
   },
-  avatar: {
-    width: 30,
-    height: 30,
-    borderRadius: "50%",
-    background: "linear-gradient(135deg, #0070d2, #005fb2)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 14,
-    flexShrink: 0,
-  },
   bubble: {
-    maxWidth: "78%",
-    padding: "10px 14px",
+    maxWidth: "82%",
+    padding: "10px 13px",
     borderRadius: 16,
     fontSize: 13,
-    lineHeight: 1.5,
+    lineHeight: 1.55,
     wordBreak: "break-word",
   },
   agentBubble: {
-    background: "#f0f7ff",
-    color: "#1a1a1a",
+    background: "#fff",
+    color: "#1a2a40",
     borderBottomLeftRadius: 4,
-    border: "1px solid #d6e8ff",
+    boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+    border: "1px solid #e8edf2",
   },
   userBubble: {
-    background: "#0070d2",
+    background: "linear-gradient(135deg, #0070d2, #005fb2)",
     color: "#fff",
     borderBottomRightRadius: 4,
+    boxShadow: "0 2px 8px rgba(0,112,210,0.25)",
   },
   typingBubble: {
     display: "flex",
     alignItems: "center",
-    gap: 4,
-    padding: "12px 16px",
+    gap: 5,
+    padding: "13px 16px",
   },
   dot: {
     display: "inline-block",
@@ -267,43 +251,52 @@ const styles: Record<string, React.CSSProperties> = {
     height: 7,
     borderRadius: "50%",
     background: "#0070d2",
-    animation: "dotPulse 1.2s ease-in-out infinite",
+    animation: "dotPulse 1.4s ease-in-out infinite",
+  },
+  ts: {
+    fontSize: 10,
+    marginTop: 5,
+    textAlign: "right",
   },
   inputBar: {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    padding: "10px 14px",
-    borderTop: "1px solid #e8e8e8",
+    padding: "10px 12px",
+    borderTop: "1px solid #e0e8f0",
     background: "#fff",
     flexShrink: 0,
+    boxShadow: "0 -2px 8px rgba(0,0,0,0.04)",
   },
   input: {
     flex: 1,
-    padding: "9px 14px",
-    borderRadius: 22,
-    border: "1.5px solid #d0d0d0",
+    padding: "10px 16px",
+    borderRadius: 24,
+    border: "1.5px solid #d0dce8",
     fontSize: 13,
     outline: "none",
-    background: "#fafafa",
-    color: "#1a1a1a",
+    background: "#f8fafc",
+    color: "#1a2a40",
+    transition: "border-color 0.2s",
   },
   sendBtn: {
-    width: 36,
-    height: 36,
+    width: 38,
+    height: 38,
     borderRadius: "50%",
     border: "none",
-    background: "#0070d2",
+    background: "linear-gradient(135deg, #0070d2, #005fb2)",
     color: "#fff",
-    fontSize: 15,
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    boxShadow: "0 2px 8px rgba(0,112,210,0.35)",
+    transition: "opacity 0.15s",
   },
-  sendBtnDisabled: {
-    background: "#c0d8f0",
+  sendBtnOff: {
+    background: "#c0d4e8",
+    boxShadow: "none",
     cursor: "not-allowed",
   },
 };

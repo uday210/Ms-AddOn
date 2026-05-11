@@ -15,7 +15,6 @@ export function EmailContextHeader({ emailContext, loading }: Props) {
             <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="#fff"/>
           </svg>
         </div>
-        <span style={s.tagline}>Claude AI · Salesforce</span>
       </div>
 
       {loading && (
@@ -59,11 +58,6 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
-  },
-  tagline: {
-    color: "rgba(255,255,255,0.65)",
-    fontSize: 11,
-    letterSpacing: "0.3px",
   },
   emailCard: {
     background: "rgba(255,255,255,0.13)",

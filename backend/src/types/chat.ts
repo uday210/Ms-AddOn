@@ -1,8 +1,16 @@
+export interface EmailAttachment {
+  id: string;
+  name: string;
+  size: number;
+  contentType: string;
+}
+
 export interface EmailContext {
   subject: string;
   from: string;
   to: string;
   bodyPreview: string;
+  attachments?: EmailAttachment[];
 }
 
 export interface ChatRequest {

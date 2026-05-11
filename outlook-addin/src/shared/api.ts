@@ -23,6 +23,25 @@ export interface ChatResponse {
   };
 }
 
+export interface AttachRequest {
+  projectId: string;
+  attachmentName: string;
+  contentType: string;
+  base64Content: string;
+}
+
+export async function attachFile(req: AttachRequest): Promise<void> {
+  const res = await fetch(`${BACKEND_URL}/api/attach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Attach error ${res.status}: ${text}`);
+  }
+}
+
 export async function sendMessage(req: ChatRequest): Promise<ChatResponse> {
   const res = await fetch(`${BACKEND_URL}/chat`, {
     method: "POST",

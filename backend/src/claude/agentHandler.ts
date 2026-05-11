@@ -67,12 +67,35 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["projectId", "projectName", "subject", "noteText"],
     },
   },
+  {
+    name: "propose_attach_file",
+    description: "Propose attaching an email attachment to a Salesforce project. Use only when the email has attachments listed in the context and the user wants to attach one. Shows a confirmation dialog before uploading.",
+    input_schema: {
+      type: "object",
+      properties: {
+        projectId:      { type: "string", description: "Salesforce Project__c record Id" },
+        projectName:    { type: "string" },
+        attachmentId:   { type: "string", description: "The Office.js attachment id from the email context" },
+        attachmentName: { type: "string", description: "The filename of the attachment" },
+        contentType:    { type: "string", description: "MIME type of the attachment" },
+      },
+      required: ["projectId", "projectName", "attachmentId", "attachmentName", "contentType"],
+    },
+  },
 ];
+
+export interface EmailAttachment {
+  id: string;
+  name: string;
+  size: number;
+  contentType: string;
+}
 
 export interface EmailCtx {
   subject: string;
   from: string;
   bodyPreview: string;
+  attachments?: EmailAttachment[];
 }
 
 export interface AgentReply {
@@ -99,6 +122,10 @@ export async function executeConfirmed(payload: Record<string, unknown>): Promis
     });
     return `Note logged on **${payload.projectName}**: "${payload.noteText}"`;
   }
+  if (payload.action === "attach_file") {
+    // File upload is handled client-side via /api/attach — this path should not be reached
+    return `File "${payload.attachmentName}" attachment was handled by the client.`;
+  }
   return "Unknown action.";
 }
 
@@ -109,7 +136,10 @@ export async function runAgent(
   history: ConversationMessage[]
 ): Promise<{ reply: AgentReply; updatedHistory: ConversationMessage[] }> {
 
-  const emailContext = `Email context:\nSubject: ${email.subject}\nFrom: ${email.from}\n\n${email.bodyPreview}`;
+  const attachmentList = email.attachments?.length
+    ? `\nAttachments:\n${email.attachments.map((a) => `  - id="${a.id}" name="${a.name}" type="${a.contentType}" size=${a.size}`).join("\n")}`
+    : "";
+  const emailContext = `Email context:\nSubject: ${email.subject}\nFrom: ${email.from}${attachmentList}\n\n${email.bodyPreview}`;
 
   // Build messages: history + current user turn
   const messages: ConversationMessage[] = [
@@ -202,6 +232,21 @@ export async function runAgent(
               projectName:  input.projectName,
               noteSubject:  input.subject,
               noteText:     input.noteText,
+            },
+          };
+          resultText = "Proposal recorded. Tell the user what you're going to do and ask them to confirm.";
+
+        } else if (block.name === "propose_attach_file") {
+          pendingProposal = {
+            label: "Attach File",
+            description: `Attach "${input.attachmentName}" to project ${input.projectName}`,
+            payload: {
+              action:         "attach_file",
+              projectId:      input.projectId,
+              projectName:    input.projectName,
+              attachmentId:   input.attachmentId,
+              attachmentName: input.attachmentName,
+              contentType:    input.contentType,
             },
           };
           resultText = "Proposal recorded. Tell the user what you're going to do and ask them to confirm.";

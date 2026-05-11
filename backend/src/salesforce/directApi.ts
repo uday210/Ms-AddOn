@@ -41,6 +41,27 @@ export async function sfCreate(sobject: string, fields: Record<string, unknown>)
   return (res.data as { id: string }).id;
 }
 
+export async function sfAttachFile(
+  projectId: string,
+  filename: string,
+  contentType: string,
+  base64Content: string
+): Promise<string> {
+  const token = await getAccessToken();
+  const res = await axios.post(
+    `${process.env.SF_INSTANCE_URL}/services/data/v63.0/sobjects/ContentVersion`,
+    {
+      Title: filename,
+      PathOnClient: filename,
+      VersionData: base64Content,
+      FirstPublishLocationId: projectId,
+      ContentType: contentType,
+    },
+    { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 30000 }
+  );
+  return (res.data as { id: string }).id;
+}
+
 export async function findProjects(name: string): Promise<SFProject[]> {
   const safe = name.replace(/'/g, "\\'").slice(0, 80);
   return soqlQuery<SFProject>(

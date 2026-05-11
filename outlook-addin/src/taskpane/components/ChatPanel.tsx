@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react"; // useRef kept for bottomRef scroll
-import { sendMessage } from "../../shared/api";
+import { sendMessage, attachFile } from "../../shared/api";
 import { MarkdownText } from "../../shared/markdown";
-import { EmailContext } from "../../shared/office";
+import { EmailContext, getAttachmentContent } from "../../shared/office";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SuggestionChips } from "./SuggestionChips";
 
@@ -72,13 +72,31 @@ export function ChatPanel({ emailContext }: Props) {
 
   async function confirmAction() {
     if (!pendingConfirm || !emailContext) return;
+    const payload = pendingConfirm.payload as Record<string, unknown>;
     setPendingConfirm(null);
     setLoading(true);
 
     try {
+      // Attach-file is handled client-side: fetch base64 from Office.js then POST to /api/attach
+      if (payload.action === "attach_file") {
+        const base64Content = await getAttachmentContent(payload.attachmentId as string);
+        await attachFile({
+          projectId:      payload.projectId as string,
+          attachmentName: payload.attachmentName as string,
+          contentType:    payload.contentType as string,
+          base64Content,
+        });
+        setMessages((prev) => [...prev, {
+          id: crypto.randomUUID(), role: "agent",
+          text: `Done! **"${payload.attachmentName}"** has been attached to project **${payload.projectName}** in Salesforce.`,
+          ts: Date.now(),
+        }]);
+        return;
+      }
+
       const res = await sendMessage({
         emailContext, userMessage: "", sessionId,
-        confirmed: true, proposedAction: pendingConfirm.payload,
+        confirmed: true, proposedAction: payload,
       });
       setSessionId(res.sessionId);
       setMessages((prev) => [...prev, {

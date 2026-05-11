@@ -22,6 +22,7 @@ router.post("/", async (req: Request, res: Response) => {
     subject:     body.emailContext.subject,
     from:        body.emailContext.from,
     bodyPreview: body.emailContext.bodyPreview ?? "",
+    attachments: body.emailContext.attachments,
   };
 
   try {

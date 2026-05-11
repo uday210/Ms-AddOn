@@ -9,7 +9,7 @@ module.exports = (env, argv) => {
     entry: "./src/taskpane/taskpane.tsx",
     output: {
       path: path.resolve(__dirname, "dist"),
-      filename: "bundle.js",
+      filename: isProd ? "bundle.[contenthash:8].js" : "bundle.js",
       clean: true,
     },
     resolve: {

@@ -17,7 +17,14 @@ app.use("/chat", chatRouter);
 
 // Serve the built Outlook add-in static files in production
 const addinDist = path.resolve(__dirname, "../../outlook-addin/dist");
-app.use(express.static(addinDist));
+// HTML files: never cache (so new bundle hash is always picked up)
+app.use(express.static(addinDist, {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    }
+  },
+}));
 app.use(express.static(path.resolve(__dirname, "../../outlook-addin/public")));
 
 app.listen(PORT, () => {

@@ -28,7 +28,7 @@ router.post("/", async (req: Request, res: Response) => {
     // ── Direct API path (already determined for this conversation) ──────────
     if (state?.useDirectApi) {
       const confirmedPayload = body.confirmed ? body.proposedAction : undefined;
-      const result = await handleDirect(body.userMessage, body.emailContext.subject, confirmedPayload);
+      const result = await handleDirect(body.userMessage, { subject: body.emailContext.subject, body: body.emailContext.bodyPreview ?? "", from: body.emailContext.from }, confirmedPayload);
       res.json({ ...result, sessionId: conversationId! } as ChatResponse);
       return;
     }
@@ -56,7 +56,7 @@ router.post("/", async (req: Request, res: Response) => {
         sessions.set(conversationId, state);
 
         const confirmedPayload = body.confirmed ? body.proposedAction : undefined;
-        const result = await handleDirect(body.userMessage, body.emailContext.subject, confirmedPayload);
+        const result = await handleDirect(body.userMessage, { subject: body.emailContext.subject, body: body.emailContext.bodyPreview ?? "", from: body.emailContext.from }, confirmedPayload);
         res.json({ ...result, sessionId: conversationId } as ChatResponse);
         return;
       }

@@ -1,5 +1,8 @@
 import axios from "axios";
+import Anthropic from "@anthropic-ai/sdk";
 import { getAccessToken } from "./auth";
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 interface Project {
   Id: string;
@@ -8,14 +11,75 @@ interface Project {
   End_Date__c?: string;
   Start_Date__c?: string;
   Account__r?: { Name: string };
-  OwnedBy?: { Name: string };
   Description__c?: string;
 }
 
+export interface EmailCtx {
+  subject: string;
+  body: string;
+  from: string;
+}
+
+export interface DirectReply {
+  reply: string;
+  requiresConfirm: boolean;
+  proposedAction?: { label: string; description: string; payload: object };
+}
+
+interface ExtractedIntent {
+  action: "find" | "summary" | "update_date" | "log_note" | "draft_reply" | "unknown";
+  projectName?: string;
+  newDate?: string;      // ISO yyyy-mm-dd
+  monthsToAdd?: number;
+  weeksToAdd?: number;
+  noteText?: string;
+}
+
+// ── Claude: extract intent + key entities from email + user message ──────────
+async function extractIntent(userMsg: string, email: EmailCtx): Promise<ExtractedIntent> {
+  const prompt = `You are a sales assistant parsing an email and a user's request.
+
+EMAIL SUBJECT: ${email.subject}
+EMAIL FROM: ${email.from}
+EMAIL BODY:
+${email.body}
+
+USER REQUEST: ${userMsg}
+
+Extract the following as JSON (use null for missing fields):
+{
+  "action": one of "find" | "summary" | "update_date" | "log_note" | "draft_reply" | "unknown",
+  "projectName": the Salesforce project name mentioned anywhere in the email or request (string or null),
+  "newDate": explicit new date in yyyy-mm-dd format if stated (or null),
+  "monthsToAdd": number of months to extend if mentioned (integer or null),
+  "weeksToAdd": number of weeks to extend if mentioned (integer or null),
+  "noteText": text to log as a note if applicable (string or null)
+}
+
+Rules:
+- "action" is determined by the user's request, not the email content.
+- projectName can appear anywhere in subject, body, or user message — look carefully.
+- If the body says "extend by 3 months" set monthsToAdd=3.
+- Return ONLY the JSON object, no explanation.`;
+
+  try {
+    const msg = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 256,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const text = (msg.content[0] as { type: string; text: string }).text.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    return jsonMatch ? JSON.parse(jsonMatch[0]) : { action: "unknown" };
+  } catch {
+    return { action: "unknown" };
+  }
+}
+
+// ── Salesforce helpers ────────────────────────────────────────────────────────
 async function soql<T>(query: string): Promise<T[]> {
   const token = await getAccessToken();
-  const base = process.env.SF_INSTANCE_URL;
-  const res = await axios.get(`${base}/services/data/v63.0/query`, {
+  const res = await axios.get(`${process.env.SF_INSTANCE_URL}/services/data/v63.0/query`, {
     params: { q: query },
     headers: { Authorization: `Bearer ${token}` },
     timeout: 15000,
@@ -25,9 +89,8 @@ async function soql<T>(query: string): Promise<T[]> {
 
 async function sfUpdate(sobject: string, id: string, fields: Record<string, unknown>): Promise<void> {
   const token = await getAccessToken();
-  const base = process.env.SF_INSTANCE_URL;
   await axios.patch(
-    `${base}/services/data/v63.0/sobjects/${sobject}/${id}`,
+    `${process.env.SF_INSTANCE_URL}/services/data/v63.0/sobjects/${sobject}/${id}`,
     fields,
     { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 15000 }
   );
@@ -35,61 +98,43 @@ async function sfUpdate(sobject: string, id: string, fields: Record<string, unkn
 
 async function sfCreate(sobject: string, fields: Record<string, unknown>): Promise<string> {
   const token = await getAccessToken();
-  const base = process.env.SF_INSTANCE_URL;
   const res = await axios.post(
-    `${base}/services/data/v63.0/sobjects/${sobject}`,
+    `${process.env.SF_INSTANCE_URL}/services/data/v63.0/sobjects/${sobject}`,
     fields,
     { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 15000 }
   );
   return (res.data as { id: string }).id;
 }
 
-function extractProjectName(text: string, subject: string): string {
-  // Try to pull a quoted name first
-  const quoted = text.match(/["']([^"']+)["']/);
-  if (quoted) return quoted[1];
-  // Fall back to email subject words (strip common prefixes)
-  return subject.replace(/^(re:|fwd?:|fw:)\s*/i, "").trim();
-}
-
-async function findProjects(searchTerm: string): Promise<Project[]> {
-  const safe = searchTerm.replace(/'/g, "\\'").slice(0, 80);
+async function findProjects(term: string): Promise<Project[]> {
+  const safe = term.replace(/'/g, "\\'").slice(0, 80);
   return soql<Project>(
     `SELECT Id, Name, Status__c, End_Date__c, Start_Date__c, Account__r.Name, Description__c
-     FROM Project__c
-     WHERE Name LIKE '%${safe}%'
-     LIMIT 5`
+     FROM Project__c WHERE Name LIKE '%${safe}%' LIMIT 5`
   );
 }
 
-function formatDate(d?: string) {
+function formatDate(d?: string | null) {
   if (!d) return "not set";
   return new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 }
 
 function projectSummary(p: Project): string {
-  const acct = p.Account__r?.Name ?? "—";
-  return (
-    `**${p.Name}**\n` +
-    `Account: ${acct}\n` +
-    `Status: ${p.Status__c ?? "—"}\n` +
-    `End Date: ${formatDate(p.End_Date__c)}\n` +
-    (p.Description__c ? `Notes: ${p.Description__c.slice(0, 200)}` : "")
-  ).trim();
+  return [
+    `**${p.Name}**`,
+    `Account: ${p.Account__r?.Name ?? "—"}`,
+    `Status: ${p.Status__c ?? "—"}`,
+    `End Date: ${formatDate(p.End_Date__c)}`,
+    p.Description__c ? `Notes: ${p.Description__c.slice(0, 200)}` : "",
+  ].filter(Boolean).join("\n");
 }
 
-export interface DirectReply {
-  reply: string;
-  requiresConfirm: boolean;
-  proposedAction?: { label: string; description: string; payload: object };
-}
-
+// ── Main handler ──────────────────────────────────────────────────────────────
 export async function handleDirect(
   userMessage: string,
-  emailSubject: string,
+  email: EmailCtx,
   confirmedPayload?: object
 ): Promise<DirectReply> {
-  const msg = userMessage.toLowerCase();
 
   // ── Confirmed write action ──────────────────────────────────────────────────
   if (confirmedPayload) {
@@ -116,114 +161,104 @@ export async function handleDirect(
     }
   }
 
-  // ── Find / lookup project ───────────────────────────────────────────────────
-  if (msg.includes("find") || msg.includes("look up") || msg.includes("project related") || msg.includes("which project")) {
-    const searchTerm = extractProjectName(userMessage, emailSubject);
-    const projects = await findProjects(searchTerm);
-    if (!projects.length) {
-      return {
-        reply: `I couldn't find any projects matching "${searchTerm}". Try a different search term or check the project name in Salesforce.`,
-        requiresConfirm: false,
-      };
-    }
-    if (projects.length === 1) {
-      return {
-        reply: `Found it!\n\n${projectSummary(projects[0])}\n\nWhat would you like to do — update the end date, log a note, or get a full summary?`,
-        requiresConfirm: false,
-      };
-    }
-    const list = projects.map((p, i) => `${i + 1}. ${p.Name} (${p.Account__r?.Name ?? "—"}) — ${p.Status__c ?? "—"}`).join("\n");
-    return {
-      reply: `Found ${projects.length} projects matching "${searchTerm}":\n\n${list}\n\nWhich one did you mean?`,
-      requiresConfirm: false,
-    };
+  // ── Use Claude to understand intent + extract project name / dates ──────────
+  const intent = await extractIntent(userMessage, email);
+  console.log("[directApi] intent:", JSON.stringify(intent));
+
+  // Lookup project in Salesforce
+  let projects: Project[] = [];
+  if (intent.projectName) {
+    projects = await findProjects(intent.projectName);
   }
 
-  // ── Summary ─────────────────────────────────────────────────────────────────
-  if (msg.includes("summar") || msg.includes("detail") || msg.includes("status") || msg.includes("overview")) {
-    const searchTerm = extractProjectName(userMessage, emailSubject);
-    const projects = await findProjects(searchTerm);
-    if (!projects.length) {
-      return { reply: `No project found for "${searchTerm}".`, requiresConfirm: false };
-    }
-    const p = projects[0];
-    return {
-      reply: `Here's the summary:\n\n${projectSummary(p)}`,
-      requiresConfirm: false,
-    };
-  }
+  // ── Route by action ─────────────────────────────────────────────────────────
+  switch (intent.action) {
 
-  // ── Update end date ─────────────────────────────────────────────────────────
-  if (msg.includes("update") || msg.includes("extend") || msg.includes("push") || msg.includes("change") && msg.includes("date")) {
-    const searchTerm = extractProjectName(userMessage, emailSubject);
-    const projects = await findProjects(searchTerm);
-    if (!projects.length) {
-      return { reply: `No project found for "${searchTerm}". What's the project name?`, requiresConfirm: false };
-    }
-    const p = projects[0];
-
-    // Try to extract a date from the message
-    const dateMatch = userMessage.match(/\b(\d{4}-\d{2}-\d{2}|\w+ \d{1,2},?\s*\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b/);
-    const weeksMatch = userMessage.match(/(\d+)\s*week/i);
-    let newDate: string;
-    if (dateMatch) {
-      newDate = new Date(dateMatch[1]).toISOString().slice(0, 10);
-    } else if (weeksMatch && p.End_Date__c) {
-      const d = new Date(p.End_Date__c);
-      d.setDate(d.getDate() + parseInt(weeksMatch[1]) * 7);
-      newDate = d.toISOString().slice(0, 10);
-    } else {
+    case "find":
+    case "summary": {
+      if (!projects.length) {
+        return {
+          reply: `I couldn't find a project${intent.projectName ? ` matching "${intent.projectName}"` : ""} in Salesforce. Could you confirm the project name?`,
+          requiresConfirm: false,
+        };
+      }
+      if (projects.length === 1) {
+        const verb = intent.action === "find" ? "Found it!" : "Here's the summary:";
+        return {
+          reply: `${verb}\n\n${projectSummary(projects[0])}\n\nWhat would you like to do — update the end date, log a note, or draft a reply?`,
+          requiresConfirm: false,
+        };
+      }
+      const list = projects.map((p, i) => `${i + 1}. ${p.Name} (${p.Account__r?.Name ?? "—"}) — ${p.Status__c ?? "—"}`).join("\n");
       return {
-        reply: `I found **${p.Name}** (current end date: ${formatDate(p.End_Date__c)}). What date should I set?`,
+        reply: `Found ${projects.length} projects:\n\n${list}\n\nWhich one?`,
         requiresConfirm: false,
       };
     }
 
-    return {
-      reply: `Confirm — move **${p.Name}** end date from **${formatDate(p.End_Date__c)}** to **${formatDate(newDate)}**?`,
-      requiresConfirm: true,
-      proposedAction: {
-        label: "Update End Date",
-        description: `Change end date to ${formatDate(newDate)}`,
-        payload: { action: "update_date", projectId: p.Id, projectName: p.Name, oldDate: p.End_Date__c, newDate },
-      },
-    };
-  }
+    case "update_date": {
+      if (!projects.length) {
+        return { reply: `No project found${intent.projectName ? ` for "${intent.projectName}"` : ""}. What's the project name?`, requiresConfirm: false };
+      }
+      const p = projects[0];
+      let newDate: string | undefined = intent.newDate ?? undefined;
 
-  // ── Log note ────────────────────────────────────────────────────────────────
-  if (msg.includes("log") || msg.includes("note") || msg.includes("record") || msg.includes("document")) {
-    const searchTerm = extractProjectName(userMessage, emailSubject);
-    const projects = await findProjects(searchTerm);
-    if (!projects.length) {
-      return { reply: `No project found for "${searchTerm}". What's the project name?`, requiresConfirm: false };
+      if (!newDate && intent.monthsToAdd && p.End_Date__c) {
+        const d = new Date(p.End_Date__c);
+        d.setMonth(d.getMonth() + intent.monthsToAdd);
+        newDate = d.toISOString().slice(0, 10);
+      } else if (!newDate && intent.weeksToAdd && p.End_Date__c) {
+        const d = new Date(p.End_Date__c);
+        d.setDate(d.getDate() + intent.weeksToAdd * 7);
+        newDate = d.toISOString().slice(0, 10);
+      }
+
+      if (!newDate) {
+        return {
+          reply: `Found **${p.Name}** (current end date: ${formatDate(p.End_Date__c)}). What date should I set?`,
+          requiresConfirm: false,
+        };
+      }
+      return {
+        reply: `Confirm — move **${p.Name}** end date from **${formatDate(p.End_Date__c)}** to **${formatDate(newDate)}**?`,
+        requiresConfirm: true,
+        proposedAction: {
+          label: "Update End Date",
+          description: `Change end date to ${formatDate(newDate)}`,
+          payload: { action: "update_date", projectId: p.Id, projectName: p.Name, oldDate: p.End_Date__c, newDate },
+        },
+      };
     }
-    const p = projects[0];
-    const noteText = userMessage.replace(/log\s+(a\s+)?(note|this)?/i, "").replace(/on\s+\w+/i, "").trim() || "Follow-up from email";
-    return {
-      reply: `Confirm — log this note on **${p.Name}**?\n\n"${noteText}"`,
-      requiresConfirm: true,
-      proposedAction: {
-        label: "Log Note",
-        description: `Log note on ${p.Name}`,
-        payload: { action: "log_note", projectId: p.Id, projectName: p.Name, noteSubject: `Email note — ${emailSubject}`, noteText },
-      },
-    };
-  }
 
-  // ── Draft reply ─────────────────────────────────────────────────────────────
-  if (msg.includes("draft") || msg.includes("reply") || msg.includes("email")) {
-    const searchTerm = extractProjectName(userMessage, emailSubject);
-    const projects = await findProjects(searchTerm);
-    const ctx = projects.length ? projectSummary(projects[0]) : "the project";
-    return {
-      reply: `Here's a draft reply:\n\n---\nThank you for the update. I've reviewed the project details and will ensure the necessary changes are made on our end. I'll keep you posted on any progress.\n\nBest regards\n---\n\n*(Based on: ${ctx})*`,
-      requiresConfirm: false,
-    };
-  }
+    case "log_note": {
+      if (!projects.length) {
+        return { reply: `No project found${intent.projectName ? ` for "${intent.projectName}"` : ""}. What's the project name?`, requiresConfirm: false };
+      }
+      const p = projects[0];
+      const noteText = intent.noteText || `Follow-up: ${email.subject}`;
+      return {
+        reply: `Confirm — log this note on **${p.Name}**?\n\n"${noteText}"`,
+        requiresConfirm: true,
+        proposedAction: {
+          label: "Log Note",
+          description: `Log note on ${p.Name}`,
+          payload: { action: "log_note", projectId: p.Id, projectName: p.Name, noteSubject: `Email — ${email.subject}`, noteText },
+        },
+      };
+    }
 
-  // ── Fallback ────────────────────────────────────────────────────────────────
-  return {
-    reply: "I can help you find a project, get a summary, update an end date, log a note, or draft a reply. What would you like to do?",
-    requiresConfirm: false,
-  };
+    case "draft_reply": {
+      const ctx = projects.length ? projectSummary(projects[0]) : email.subject;
+      return {
+        reply: `Here's a draft reply:\n\n---\nThank you for the update. I've reviewed the project details and will ensure the necessary changes are made on our end. I'll keep you posted on any progress.\n\nBest regards\n---\n\n*(Based on: ${ctx})*`,
+        requiresConfirm: false,
+      };
+    }
+
+    default:
+      return {
+        reply: "I can help you **find a project**, get a **summary**, **update the end date**, **log a note**, or **draft a reply**. What would you like to do?",
+        requiresConfirm: false,
+      };
+  }
 }

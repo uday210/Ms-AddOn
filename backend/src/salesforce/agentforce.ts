@@ -35,7 +35,7 @@ export async function createSession(): Promise<string> {
           streamingCapabilities: { chunkTypes: ["Text"] },
           bypassUser: true,
         },
-        { headers: agentHeaders(token), validateStatus: () => true }
+        { headers: agentHeaders(token), validateStatus: () => true, timeout: 15000 }
       );
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -83,6 +83,7 @@ export async function sendMessage(
     {
       headers: { ...agentHeaders(token), Accept: "application/json" },
       validateStatus: () => true,
+      timeout: 30000,
     }
   );
 

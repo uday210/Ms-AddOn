@@ -9,7 +9,9 @@ function App() {
   const [emailLoading, setEmailLoading] = useState(true);
   const [emailError, setEmailError] = useState<string | null>(null);
 
-  useEffect(() => {
+  function loadEmailContext() {
+    setEmailLoading(true);
+    setEmailError(null);
     getEmailContext()
       .then((ctx) => {
         setEmailContext(ctx);
@@ -19,6 +21,24 @@ function App() {
         setEmailError((err as Error).message);
         setEmailLoading(false);
       });
+  }
+
+  useEffect(() => {
+    loadEmailContext();
+
+    // Keep the pane alive when the user switches emails (pinned task pane)
+    if (typeof Office !== "undefined" && Office.context?.mailbox) {
+      Office.context.mailbox.addHandlerAsync(
+        Office.EventType.ItemChanged,
+        loadEmailContext
+      );
+    }
+
+    return () => {
+      if (typeof Office !== "undefined" && Office.context?.mailbox) {
+        Office.context.mailbox.removeHandlerAsync(Office.EventType.ItemChanged, {});
+      }
+    };
   }, []);
 
   return (

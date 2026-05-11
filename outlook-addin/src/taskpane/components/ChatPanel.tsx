@@ -35,6 +35,7 @@ export function ChatPanel({ emailContext }: Props) {
   const [copied, setCopied]                 = useState<string | null>(null);
   const [historyLoaded, setHistoryLoaded]   = useState(false);
   const [hasRestoredHistory, setHasRestoredHistory] = useState(false);
+  const [savedFlash, setSavedFlash]         = useState(false);
 
   const bottomRef    = useRef<HTMLDivElement>(null);
   const savedRef     = useRef(false); // gate: don't save until after initial load
@@ -52,7 +53,12 @@ export function ChatPanel({ emailContext }: Props) {
 
   // Restore conversation from server on mount
   useEffect(() => {
-    if (!emailContext) return;
+    if (!emailContext) {
+      // emailContext not ready yet — mark ready anyway so proactive analysis isn't blocked
+      savedRef.current = true;
+      setHistoryLoaded(true);
+      return;
+    }
     const key = emailKey(emailContext);
     loadHistory(key).then(({ messages: saved, sessionId: sid }) => {
       if (saved && saved.length > 0) {
@@ -77,7 +83,10 @@ export function ChatPanel({ emailContext }: Props) {
   // Persist conversation to server after every turn
   useEffect(() => {
     if (!savedRef.current || !emailContext || messages.length === 0) return;
-    saveHistory(emailKey(emailContext), messages, sessionId);
+    saveHistory(emailKey(emailContext), messages, sessionId).then(() => {
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2000);
+    });
   }, [messages, sessionId]);
 
   // ── Core streaming function ───────────────────────────────────────────────
@@ -307,6 +316,8 @@ export function ChatPanel({ emailContext }: Props) {
         </div>
       )}
 
+      {savedFlash && <div style={s.savedFlash}>✓ Saved</div>}
+
       <div style={{ ...s.inputBar, ...(focused ? s.inputBarFocused : {}) }}>
         <input
           style={{ ...s.input, ...(focused ? s.inputFocused : {}) }}
@@ -380,6 +391,7 @@ const s: Record<string, React.CSSProperties> = {
   undoToast:   { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", background:"#032D60", flexShrink:0, animation:"slideUp 0.2s ease" },
   undoText:    { color:"rgba(255,255,255,0.85)", fontSize:12 },
   undoBtn:     { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)", color:"#fff", borderRadius:8, padding:"4px 12px", fontSize:12, fontWeight:600, cursor:"pointer" },
+  savedFlash:  { textAlign:"center" as const, fontSize:10.5, color:"#22c55e", fontWeight:600, padding:"3px 0", background:"#f0fdf4", borderTop:"1px solid #d1fae5", flexShrink:0, letterSpacing:"0.3px" },
   inputBar:    { display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderTop:"1px solid #e2eaf3", background:"#fff", flexShrink:0, transition:"box-shadow 0.2s ease", boxShadow:"0 -2px 10px rgba(0,0,0,0.04)" },
   inputBarFocused: { boxShadow:"0 -2px 16px rgba(1,118,211,0.1)" },
   input:       { flex:1, padding:"10px 16px", borderRadius:24, border:"1.5px solid #d6e2f0", fontSize:13, outline:"none", background:"#f7fafd", color:"#1a2a40", transition:"border-color 0.2s ease,box-shadow 0.2s ease" },

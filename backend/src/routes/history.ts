@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { getConv, saveConv, clearConv, StoredMessage } from "../store/conversationStore";
+import { getConv, saveConv, clearConv, storeStatus, StoredMessage } from "../store/conversationStore";
 
 const router = Router();
 
@@ -25,6 +25,11 @@ router.post("/clear", (req: Request, res: Response) => {
   if (!emailKey) { res.status(400).json({ error: "emailKey required" }); return; }
   clearConv(emailKey);
   res.json({ ok: true });
+});
+
+// Debug: show all stored conversations
+router.get("/status", (_req: Request, res: Response) => {
+  res.json(storeStatus());
 });
 
 export default router;

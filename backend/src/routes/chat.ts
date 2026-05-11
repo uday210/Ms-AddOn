@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
-import { createSession, endSession, sendMessage } from "../salesforce/agentforce";
-import { handleDirect } from "../salesforce/directApi";
+import { callApexProxy } from "../salesforce/apexProxy";
+import { handleDirect, EmailCtx } from "../salesforce/directApi";
 import { ChatRequest, ChatResponse } from "../types/chat";
 
 const router = Router();
@@ -21,62 +21,87 @@ router.post("/", async (req: Request, res: Response) => {
     return;
   }
 
+  const emailCtx: EmailCtx = {
+    subject: body.emailContext.subject,
+    body: body.emailContext.bodyPreview ?? "",
+    from: body.emailContext.from,
+  };
+
   try {
     let state = body.sessionId ? sessions.get(body.sessionId) : undefined;
     let conversationId = body.sessionId;
 
-    // ── Direct API path (already determined for this conversation) ──────────
+    // ── Direct API path (already locked in for this conversation) ───────────
     if (state?.useDirectApi) {
-      const confirmedPayload = body.confirmed ? body.proposedAction : undefined;
-      const result = await handleDirect(body.userMessage, { subject: body.emailContext.subject, body: body.emailContext.bodyPreview ?? "", from: body.emailContext.from }, confirmedPayload);
+      const confirmed = body.confirmed ? body.proposedAction : undefined;
+      const result = await handleDirect(body.userMessage, emailCtx, confirmed);
       res.json({ ...result, sessionId: conversationId! } as ChatResponse);
       return;
     }
 
-    // ── Try Agentforce ───────────────────────────────────────────────────────
+    // ── Confirmed write action through Apex proxy ────────────────────────────
+    if (state && !state.useDirectApi && body.confirmed && body.proposedAction) {
+      state.sequenceId += 1;
+      const apexRes = await callApexProxy({
+        userMessage: `The user confirmed. Please proceed: ${JSON.stringify(body.proposedAction)}`,
+        sfSessionId: state.sfSessionId,
+        sequenceId: state.sequenceId,
+        emailContext: body.emailContext,
+      });
+      state.sequenceId = apexRes.sequenceId;
+      res.json({
+        reply: apexRes.reply,
+        sessionId: conversationId!,
+        requiresConfirm: false,
+      } as ChatResponse);
+      return;
+    }
+
+    // ── New conversation: try Apex proxy → fall back to direct API ───────────
     if (!state) {
       try {
-        const sfSessionId = await createSession();
-        conversationId = sfSessionId;
-        state = { sfSessionId, sequenceId: 0, useDirectApi: false };
+        const apexRes = await callApexProxy({
+          userMessage: body.userMessage.trim(),
+          sequenceId: 0,
+          emailContext: body.emailContext,
+        });
+        conversationId = apexRes.sfSessionId;
+        state = { sfSessionId: apexRes.sfSessionId, sequenceId: apexRes.sequenceId, useDirectApi: false };
         sessions.set(conversationId, state);
 
-        const context =
-          `Email context:\nSubject: ${body.emailContext.subject}\n` +
-          `From: ${body.emailContext.from}\nTo: ${body.emailContext.to}\n` +
-          `Body preview: ${body.emailContext.bodyPreview}`;
+        res.json({
+          reply: apexRes.reply,
+          sessionId: conversationId,
+          requiresConfirm: false,
+        } as ChatResponse);
+        return;
 
-        state.sequenceId += 1;
-        await sendMessage(state.sfSessionId, context, state.sequenceId);
-      } catch (agentErr) {
-        // Agentforce unavailable — fall back to direct Salesforce REST API
-        console.warn("[chat] Agentforce unavailable, switching to direct API:", (agentErr as Error).message);
+      } catch (apexErr) {
+        // Apex proxy unavailable — fall back to direct Salesforce REST + Claude
+        console.warn("[chat] Apex proxy failed, using direct API:", (apexErr as Error).message);
         conversationId = `direct-${Date.now()}`;
         state = { sfSessionId: "", sequenceId: 0, useDirectApi: true };
         sessions.set(conversationId, state);
 
-        const confirmedPayload = body.confirmed ? body.proposedAction : undefined;
-        const result = await handleDirect(body.userMessage, { subject: body.emailContext.subject, body: body.emailContext.bodyPreview ?? "", from: body.emailContext.from }, confirmedPayload);
+        const confirmed = body.confirmed ? body.proposedAction : undefined;
+        const result = await handleDirect(body.userMessage, emailCtx, confirmed);
         res.json({ ...result, sessionId: conversationId } as ChatResponse);
         return;
       }
     }
 
-    // ── Send message to Agentforce ───────────────────────────────────────────
-    let outgoing = body.userMessage.trim();
-    if (body.confirmed && body.proposedAction) {
-      outgoing = `The user confirmed. Please proceed: ${JSON.stringify(body.proposedAction)}`;
-    }
-    if (!outgoing) {
-      res.status(400).json({ error: "userMessage is empty" });
-      return;
-    }
-
+    // ── Ongoing Apex proxy conversation ──────────────────────────────────────
     state.sequenceId += 1;
-    const agentReply = await sendMessage(state.sfSessionId, outgoing, state.sequenceId);
+    const apexRes = await callApexProxy({
+      userMessage: body.userMessage.trim(),
+      sfSessionId: state.sfSessionId,
+      sequenceId: state.sequenceId,
+      emailContext: body.emailContext,
+    });
+    state.sequenceId = apexRes.sequenceId;
 
     res.json({
-      reply: agentReply || "(no response from agent)",
+      reply: apexRes.reply,
       sessionId: conversationId!,
       requiresConfirm: false,
     } as ChatResponse);
@@ -89,12 +114,9 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// Clean up old sessions every 30 min
+// Clean up sessions every 30 min
 setInterval(() => {
-  for (const [id, state] of sessions.entries()) {
-    if (!state.useDirectApi) endSession(state.sfSessionId).catch(() => {});
-    sessions.delete(id);
-  }
+  sessions.clear();
 }, 30 * 60 * 1000);
 
 export default router;

@@ -35,82 +35,44 @@ interface ExtractedIntent {
   noteText?: string;
 }
 
-// ── Regex-based intent extraction (no API key needed) ────────────────────────
-function extractIntentRegex(userMsg: string, email: EmailCtx): ExtractedIntent {
-  const all = `${userMsg} ${email.subject} ${email.body}`.toLowerCase();
-  const src = `${userMsg} ${email.body}`;
-
-  // Action
-  let action: ExtractedIntent["action"] = "unknown";
-  if (/draft|reply|compose/i.test(userMsg)) action = "draft_reply";
-  else if (/log|note|record|document/i.test(userMsg)) action = "log_note";
-  else if (/update|extend|push|change.*date|date.*change/i.test(userMsg)) action = "update_date";
-  else if (/summar|detail|status|overview/i.test(userMsg)) action = "summary";
-  else if (/find|look.?up|which project|project related/i.test(userMsg)) action = "find";
-
-  // Project name — "project name : XYZ" anywhere in body or message
-  let projectName: string | undefined;
-  const nameMatch = src.match(/project\s+name\s*[:\-;]\s*([^\n\r,;.]{3,80})/i);
-  if (nameMatch) projectName = nameMatch[1].trim();
-
-  // Months
-  const monthMatch = all.match(/(\d+)\s*(?:more\s+)?months?/i);
-  const monthsToAdd = monthMatch ? parseInt(monthMatch[1]) : undefined;
-
-  // Weeks
-  const weekMatch = all.match(/(\d+)\s*(?:more\s+)?weeks?/i);
-  const weeksToAdd = weekMatch ? parseInt(weekMatch[1]) : undefined;
-
-  // Explicit date
-  const dateMatch = src.match(/\b(\d{4}-\d{2}-\d{2})\b/);
-  const newDate = dateMatch ? dateMatch[1] : undefined;
-
-  return { action, projectName, newDate, monthsToAdd, weeksToAdd };
-}
-
-// ── Claude: extract intent + key entities (used if ANTHROPIC_API_KEY is set) ─
+// ── Action 1: Extract intent + entities from email using a prompt ─────────────
+// Passes the full email content to Claude and gets back structured data.
+// This is the "Extract Email Info" agent action — no regex, pure LLM reasoning.
 async function extractIntent(userMsg: string, email: EmailCtx): Promise<ExtractedIntent> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return extractIntentRegex(userMsg, email);
-  }
-
-  const prompt = `You are a sales assistant parsing an email and a user's request.
+  const prompt = `You are a Salesforce sales assistant. A sales rep is looking at an email and made a request.
 
 EMAIL SUBJECT: ${email.subject}
 EMAIL FROM: ${email.from}
 EMAIL BODY:
 ${email.body}
 
-USER REQUEST: ${userMsg}
+SALES REP REQUEST: ${userMsg}
 
-Extract the following as JSON (use null for missing fields):
+Your job: read the email carefully and extract key details. Return a single JSON object:
 {
   "action": one of "find" | "summary" | "update_date" | "log_note" | "draft_reply" | "unknown",
-  "projectName": the Salesforce project name mentioned anywhere in the email or request (string or null),
-  "newDate": explicit new date in yyyy-mm-dd format if stated (or null),
-  "monthsToAdd": number of months to extend if mentioned (integer or null),
+  "projectName": the Salesforce project name found ANYWHERE in the email subject, body, or request (string or null),
+  "newDate": explicit new end date in yyyy-mm-dd format if mentioned (string or null),
+  "monthsToAdd": number of months to extend if mentioned like "3 months", "2 more months" (integer or null),
   "weeksToAdd": number of weeks to extend if mentioned (integer or null),
-  "noteText": text to log as a note if applicable (string or null)
+  "noteText": text to log as a note if the action is log_note (string or null)
 }
 
 Rules:
-- "action" is determined by the user's request, not the email content.
-- projectName can appear anywhere in subject, body, or user message — look carefully.
-- If the body says "extend by 3 months" set monthsToAdd=3.
-- Return ONLY the JSON object, no explanation.`;
+- action comes from what the SALES REP asked, not the email content.
+- projectName can be anywhere — look in the body for patterns like "project name: X" or a proper noun.
+- Return ONLY valid JSON, nothing else.`;
 
-  try {
-    const msg = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 256,
-      messages: [{ role: "user", content: prompt }],
-    });
-    const text = (msg.content[0] as { type: string; text: string }).text.trim();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    return jsonMatch ? JSON.parse(jsonMatch[0]) : extractIntentRegex(userMsg, email);
-  } catch {
-    return extractIntentRegex(userMsg, email);
-  }
+  const msg = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 300,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const text = (msg.content[0] as { type: string; text: string }).text.trim();
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error("Claude returned non-JSON: " + text);
+  return JSON.parse(jsonMatch[0]) as ExtractedIntent;
 }
 
 // ── Salesforce helpers ────────────────────────────────────────────────────────

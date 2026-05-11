@@ -1,4 +1,4 @@
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { getAccessToken } from "./auth";
 
 export interface SFProject {
@@ -60,8 +60,9 @@ export async function sfAttachFile(
     );
     return (res.data as { id: string }).id;
   } catch (err: unknown) {
-    if (axios.isAxiosError(err) && err.response) {
-      throw new Error(`Salesforce error ${err.response.status}: ${JSON.stringify(err.response.data)}`);
+    const axErr = err as AxiosError;
+    if (axErr.isAxiosError && axErr.response) {
+      throw new Error(`Salesforce error ${axErr.response.status}: ${JSON.stringify(axErr.response.data)}`);
     }
     throw err;
   }

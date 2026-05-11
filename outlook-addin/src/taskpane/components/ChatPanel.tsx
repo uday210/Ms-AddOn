@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { streamChat, sendMessage, attachFile } from "../../shared/api";
+import { streamChat, sendMessage, attachFile, performUndo, ProposedAction, UndoToken } from "../../shared/api";
 import { MarkdownText } from "../../shared/markdown";
 import { EmailContext, getAttachmentContent, openMeetingForm, openReplyWithBody } from "../../shared/office";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -18,41 +18,45 @@ interface Props {
 }
 
 export function ChatPanel({ emailContext }: Props) {
-  const [messages, setMessages]           = useState<Message[]>([]);
-  const [input, setInput]                 = useState("");
-  const [loading, setLoading]             = useState(false);
-  const [focused, setFocused]             = useState(false);
-  const [sessionId, setSessionId]         = useState<string | undefined>();
-  const [streamingText, setStreamingText] = useState("");
-  const [statusText, setStatusText]       = useState("");
-  const [pendingConfirm, setPendingConfirm] = useState<{
-    description: string;
-    payload: object;
-  } | null>(null);
+  const [messages, setMessages]             = useState<Message[]>([]);
+  const [input, setInput]                   = useState("");
+  const [loading, setLoading]               = useState(false);
+  const [focused, setFocused]               = useState(false);
+  const [sessionId, setSessionId]           = useState<string | undefined>();
+  const [streamingText, setStreamingText]   = useState("");
+  const [statusText, setStatusText]         = useState("");
+  const [pendingConfirms, setPendingConfirms] = useState<ProposedAction[]>([]);
+  const [undoTokens, setUndoTokens]         = useState<UndoToken[]>([]);
+  const [hoveredMsgId, setHoveredMsgId]     = useState<string | null>(null);
+  const [copied, setCopied]                 = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading, streamingText, statusText]);
+  }, [messages, loading, streamingText]);
 
-  // Auto-analyse whenever this component mounts (email context available or switching emails)
+  // Auto-clear undo toast after 30 s
+  useEffect(() => {
+    if (!undoTokens.length) return;
+    const t = setTimeout(() => setUndoTokens([]), 30_000);
+    return () => clearTimeout(t);
+  }, [undoTokens]);
+
+  // Proactive analysis on mount
   useEffect(() => {
     if (!emailContext) return;
     runStream(
-      "Briefly analyse this email: which Salesforce project does it relate to (if any), what is the sender asking for, and what is the single most helpful action I can take right now? Keep it to 2-3 sentences.",
-      true  // silent — no user bubble
+      "Analyse this email: classify urgency (🔴 Urgent / 🟡 Normal / 🟢 Low), summarise what the sender is asking for, list any action items or deadlines, and recommend the single most useful action I can take right now. Be concise.",
+      true
     );
-  }, []); // intentionally empty deps — fires once on mount (key changes per email)
+  }, []);
 
-  // ── Streaming helper ──────────────────────────────────────────────────────
+  // ── Core streaming function ───────────────────────────────────────────────
   async function runStream(userMessage: string, silent = false) {
     if (!emailContext) return;
-
     if (!silent) {
-      setMessages((prev) => [...prev, {
-        id: crypto.randomUUID(), role: "user", text: userMessage.trim(), ts: Date.now(),
-      }]);
+      setMessages((p) => [...p, { id: crypto.randomUUID(), role: "user", text: userMessage.trim(), ts: Date.now() }]);
     }
     setInput("");
     setLoading(true);
@@ -60,12 +64,11 @@ export function ChatPanel({ emailContext }: Props) {
     setStatusText("");
 
     const msgId = crypto.randomUUID();
-    let finalDraftBody: string | undefined;
 
     try {
       for await (const event of streamChat({ emailContext, userMessage, sessionId })) {
         if (event.type === "delta") {
-          setStreamingText((prev) => prev + event.text);
+          setStreamingText((p) => p + event.text);
           setStatusText("");
         } else if (event.type === "status") {
           setStatusText(event.text);
@@ -73,13 +76,10 @@ export function ChatPanel({ emailContext }: Props) {
           setStreamingText("");
         } else if (event.type === "done") {
           setSessionId(event.sessionId);
-          finalDraftBody = event.draftBody;
-          if (event.requiresConfirm && event.proposedAction) {
-            setPendingConfirm({ description: event.proposedAction.description, payload: event.proposedAction.payload });
+          if (event.requiresConfirm && event.proposedActions?.length) {
+            setPendingConfirms(event.proposedActions);
           }
-          setMessages((prev) => [...prev, {
-            id: msgId, role: "agent", text: event.reply, ts: Date.now(), draftBody: event.draftBody,
-          }]);
+          setMessages((p) => [...p, { id: msgId, role: "agent", text: event.reply, ts: Date.now(), draftBody: event.draftBody }]);
           setStreamingText("");
           setStatusText("");
         } else if (event.type === "error") {
@@ -87,88 +87,100 @@ export function ChatPanel({ emailContext }: Props) {
         }
       }
     } catch (err) {
-      setMessages((prev) => [...prev, {
-        id: crypto.randomUUID(), role: "agent",
-        text: `Something went wrong: ${(err as Error).message}`,
-        ts: Date.now(),
-      }]);
+      setMessages((p) => [...p, { id: crypto.randomUUID(), role: "agent", text: `Something went wrong: ${(err as Error).message}`, ts: Date.now() }]);
       setStreamingText("");
       setStatusText("");
     } finally {
       setLoading(false);
     }
-    return finalDraftBody;
   }
 
-  function send(userMessage: string) {
-    if (!userMessage.trim() || loading || !emailContext) return;
-    runStream(userMessage.trim());
+  function send(msg: string) {
+    if (!msg.trim() || loading || !emailContext) return;
+    runStream(msg.trim());
   }
 
-  // ── Confirm handler ───────────────────────────────────────────────────────
-  async function confirmAction() {
-    if (!pendingConfirm || !emailContext) return;
-    const payload = pendingConfirm.payload as Record<string, unknown>;
-    setPendingConfirm(null);
+  // ── Confirm all pending actions ────────────────────────────────────────────
+  async function confirmAll() {
+    const actions = pendingConfirms;
+    setPendingConfirms([]);
     setLoading(true);
 
+    const resultLines: string[] = [];
+    const newUndoTokens: UndoToken[] = [];
+    const serverPayloads: Record<string, unknown>[] = [];
+
     try {
-      if (payload.action === "schedule_meeting") {
-        openMeetingForm({
-          subject:           payload.subject as string,
-          requiredAttendees: payload.requiredAttendees as string[],
-          optionalAttendees: payload.optionalAttendees as string[] | undefined,
-          startDate:         payload.proposedDate as string,
-          startTime:         payload.startTime as string,
-          durationMinutes:   payload.durationMinutes as number,
-          agenda:            payload.agenda as string,
-        });
-        setMessages((prev) => [...prev, {
-          id: crypto.randomUUID(), role: "agent",
-          text: `Meeting form opened in Outlook! Review the details and hit **Send** when ready.`,
-          ts: Date.now(),
-        }]);
-        return;
+      // Client-side actions first (no round-trip needed)
+      for (const action of actions) {
+        const payload = action.payload as Record<string, unknown>;
+
+        if (payload.action === "schedule_meeting") {
+          openMeetingForm({
+            subject:           payload.subject as string,
+            requiredAttendees: payload.requiredAttendees as string[],
+            optionalAttendees: payload.optionalAttendees as string[] | undefined,
+            startDate:         payload.proposedDate as string,
+            startTime:         payload.startTime as string,
+            durationMinutes:   payload.durationMinutes as number,
+            agenda:            payload.agenda as string,
+          });
+          resultLines.push(`Meeting form opened for **"${payload.subject}"**. Review and send when ready.`);
+
+        } else if (payload.action === "attach_file") {
+          const base64Content = await getAttachmentContent(payload.attachmentId as string);
+          await attachFile({ projectId: payload.projectId as string, attachmentName: payload.attachmentName as string, contentType: payload.contentType as string, base64Content });
+          resultLines.push(`**"${payload.attachmentName}"** attached to **${payload.projectName}**.`);
+
+        } else {
+          serverPayloads.push(payload);
+        }
       }
 
-      if (payload.action === "attach_file") {
-        const base64Content = await getAttachmentContent(payload.attachmentId as string);
-        await attachFile({
-          projectId:      payload.projectId as string,
-          attachmentName: payload.attachmentName as string,
-          contentType:    payload.contentType as string,
-          base64Content,
-        });
-        setMessages((prev) => [...prev, {
-          id: crypto.randomUUID(), role: "agent",
-          text: `Done! **"${payload.attachmentName}"** attached to **${payload.projectName}** in Salesforce.`,
-          ts: Date.now(),
-        }]);
-        return;
+      // Server-side actions batched in one request
+      if (serverPayloads.length > 0) {
+        const res = await sendMessage({ emailContext: emailContext!, userMessage: "", sessionId, confirmed: true, proposedActions: serverPayloads });
+        setSessionId(res.sessionId);
+        if (res.reply) resultLines.push(res.reply);
+        if (res.undoTokens?.length) newUndoTokens.push(...res.undoTokens);
       }
 
-      const res = await sendMessage({
-        emailContext, userMessage: "", sessionId,
-        confirmed: true, proposedAction: payload,
-      });
-      setSessionId(res.sessionId);
-      setMessages((prev) => [...prev, {
-        id: crypto.randomUUID(), role: "agent", text: res.reply, ts: Date.now(), draftBody: res.draftBody,
-      }]);
+      setMessages((p) => [...p, { id: crypto.randomUUID(), role: "agent", text: resultLines.join("\n\n"), ts: Date.now() }]);
+      if (newUndoTokens.length) setUndoTokens(newUndoTokens);
+
     } catch (err) {
-      setMessages((prev) => [...prev, {
-        id: crypto.randomUUID(), role: "agent",
-        text: `Error: ${(err as Error).message}`,
-        ts: Date.now(),
-      }]);
+      setMessages((p) => [...p, { id: crypto.randomUUID(), role: "agent", text: `Error: ${(err as Error).message}`, ts: Date.now() }]);
     } finally {
       setLoading(false);
     }
   }
 
+  // ── Undo ──────────────────────────────────────────────────────────────────
+  async function handleUndo() {
+    const tokens = undoTokens;
+    setUndoTokens([]);
+    setLoading(true);
+    try {
+      const results = await performUndo(tokens);
+      setMessages((p) => [...p, { id: crypto.randomUUID(), role: "agent", text: results.join("\n\n"), ts: Date.now() }]);
+    } catch (err) {
+      setMessages((p) => [...p, { id: crypto.randomUUID(), role: "agent", text: `Undo failed: ${(err as Error).message}`, ts: Date.now() }]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Copy ──────────────────────────────────────────────────────────────────
+  function copyMsg(id: string, text: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(id);
+      setTimeout(() => setCopied(null), 2000);
+    });
+  }
+
   const isReady = !!emailContext && !loading;
   const canSend = isReady && !!input.trim();
-  const showStreaming = !!(streamingText || statusText) && loading;
+  const showStreaming = (!!streamingText || !!statusText) && loading;
 
   return (
     <div style={s.wrapper}>
@@ -176,25 +188,40 @@ export function ChatPanel({ emailContext }: Props) {
 
       <div style={s.messages}>
         {messages.map((msg) => (
-          <div key={msg.id} style={{ ...s.row, justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
+          <div
+            key={msg.id}
+            style={{ ...s.row, justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}
+            onMouseEnter={() => setHoveredMsgId(msg.id)}
+            onMouseLeave={() => setHoveredMsgId(null)}
+          >
             {msg.role === "agent" && <AgentAvatar />}
             <div style={{ ...s.bubble, ...(msg.role === "user" ? s.userBubble : s.agentBubble) }}>
               {msg.role === "agent" ? <MarkdownText text={msg.text} /> : msg.text}
+
+              {/* Draft reply button */}
               {msg.role === "agent" && msg.draftBody && (
-                <button
-                  style={s.openReplyBtn}
-                  onClick={() => openReplyWithBody(msg.draftBody!)}
-                >
+                <button style={s.openReplyBtn} onClick={() => openReplyWithBody(msg.draftBody!)}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                     <polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>
                   </svg>
                   Open draft in Outlook
                 </button>
               )}
+
               <div style={{ ...s.ts, color: msg.role === "user" ? "rgba(255,255,255,0.5)" : "#b8c4d0" }}>
                 {new Date(msg.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </div>
             </div>
+
+            {/* Copy button — shows on hover for agent messages */}
+            {msg.role === "agent" && hoveredMsgId === msg.id && (
+              <button style={s.copyBtn} onClick={() => copyMsg(msg.id, msg.text)} title="Copy">
+                {copied === msg.id
+                  ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0176D3" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8090a0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                }
+              </button>
+            )}
           </div>
         ))}
 
@@ -203,36 +230,32 @@ export function ChatPanel({ emailContext }: Props) {
           <div style={{ ...s.row, justifyContent: "flex-start" }}>
             <AgentAvatar pulse />
             <div style={{ ...s.bubble, ...s.agentBubble }}>
-              {statusText && !streamingText && (
-                <span style={s.statusText}>{statusText}</span>
-              )}
-              {streamingText && (
-                <>
-                  <MarkdownText text={streamingText} />
-                  <span style={s.cursor} />
-                </>
-              )}
-              {!statusText && !streamingText && (
-                <span style={s.statusText}>Thinking…</span>
-              )}
+              {statusText && !streamingText && <span style={s.statusText}>{statusText}</span>}
+              {streamingText && <><MarkdownText text={streamingText} /><span style={s.cursor} /></>}
+              {!statusText && !streamingText && <span style={s.statusText}>Thinking…</span>}
             </div>
           </div>
         )}
 
-        {/* Typing dots when loading but no stream yet */}
         {loading && !showStreaming && (
           <div style={{ ...s.row, justifyContent: "flex-start" }}>
             <AgentAvatar pulse />
             <div style={{ ...s.bubble, ...s.agentBubble, ...s.typingBubble }}>
-              <span style={s.dot} />
-              <span style={{ ...s.dot, animationDelay: "0.18s" }} />
-              <span style={{ ...s.dot, animationDelay: "0.36s" }} />
+              <span style={s.dot} /><span style={{ ...s.dot, animationDelay: "0.18s" }} /><span style={{ ...s.dot, animationDelay: "0.36s" }} />
             </div>
           </div>
         )}
 
         <div ref={bottomRef} />
       </div>
+
+      {/* Undo toast */}
+      {undoTokens.length > 0 && (
+        <div style={s.undoToast}>
+          <span style={s.undoText}>Action saved to Salesforce</span>
+          <button style={s.undoBtn} onClick={handleUndo}>Undo</button>
+        </div>
+      )}
 
       <div style={{ ...s.inputBar, ...(focused ? s.inputBarFocused : {}) }}>
         <input
@@ -245,12 +268,7 @@ export function ChatPanel({ emailContext }: Props) {
           onBlur={() => setFocused(false)}
           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send(input)}
         />
-        <button
-          style={{ ...s.sendBtn, ...(canSend ? s.sendBtnActive : s.sendBtnOff) }}
-          onClick={() => send(input)}
-          disabled={!canSend}
-          aria-label="Send"
-        >
+        <button style={{ ...s.sendBtn, ...(canSend ? s.sendBtnActive : s.sendBtnOff) }} onClick={() => send(input)} disabled={!canSend} aria-label="Send">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
             <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
             <path d="M22 2L15 22 11 13 2 9l20-7z" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -258,11 +276,11 @@ export function ChatPanel({ emailContext }: Props) {
         </button>
       </div>
 
-      {pendingConfirm && (
+      {pendingConfirms.length > 0 && (
         <ConfirmDialog
-          description={pendingConfirm.description}
-          onConfirm={confirmAction}
-          onCancel={() => setPendingConfirm(null)}
+          actions={pendingConfirms}
+          onConfirm={confirmAll}
+          onCancel={() => setPendingConfirms([])}
         />
       )}
 
@@ -282,123 +300,39 @@ function AgentAvatar({ pulse }: { pulse?: boolean }) {
 }
 
 const avs: Record<string, React.CSSProperties> = {
-  avatar: {
-    width: 28, height: 28, borderRadius: "50%",
-    background: "linear-gradient(135deg, #0176D3 0%, #032D60 100%)",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    flexShrink: 0, boxShadow: "0 2px 8px rgba(1,118,211,0.3)",
-  },
-  pulse: {
-    animation: "avatarPulse 1.5s ease-in-out infinite",
-  },
+  avatar: { width: 28, height: 28, borderRadius: "50%", background: "linear-gradient(135deg, #0176D3 0%, #032D60 100%)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 2px 8px rgba(1,118,211,0.3)" },
+  pulse:  { animation: "avatarPulse 1.5s ease-in-out infinite" },
 };
 
 const cssAnimations = `
-@keyframes msgIn {
-  from { opacity: 0; transform: translateY(10px) scale(0.97); }
-  to   { opacity: 1; transform: translateY(0)   scale(1);    }
-}
-@keyframes dotPulse {
-  0%, 80%, 100% { opacity: 0.2; transform: scale(0.7); }
-  40%           { opacity: 1;   transform: scale(1);   }
-}
-@keyframes avatarPulse {
-  0%, 100% { box-shadow: 0 2px 8px rgba(1,118,211,0.3); }
-  50%      { box-shadow: 0 2px 20px rgba(1,118,211,0.7); }
-}
-@keyframes cursorBlink {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0; }
-}`;
+@keyframes msgIn { from { opacity:0; transform:translateY(10px) scale(0.97); } to { opacity:1; transform:translateY(0) scale(1); } }
+@keyframes dotPulse { 0%,80%,100% { opacity:0.2; transform:scale(0.7); } 40% { opacity:1; transform:scale(1); } }
+@keyframes avatarPulse { 0%,100% { box-shadow:0 2px 8px rgba(1,118,211,0.3); } 50% { box-shadow:0 2px 20px rgba(1,118,211,0.7); } }
+@keyframes cursorBlink { 0%,100% { opacity:1; } 50% { opacity:0; } }
+@keyframes slideUp { from { opacity:0; transform:translateY(100%); } to { opacity:1; transform:translateY(0); } }`;
 
 const s: Record<string, React.CSSProperties> = {
-  wrapper: {
-    display: "flex", flexDirection: "column", flex: 1,
-    overflow: "hidden", position: "relative", background: "#f0f4f9",
-  },
-  messages: {
-    flex: 1, overflowY: "auto", padding: "14px 12px 10px",
-    display: "flex", flexDirection: "column", gap: 12,
-  },
-  row: {
-    display: "flex", alignItems: "flex-end", gap: 8,
-    animation: "msgIn 0.25s cubic-bezier(0.22,1,0.36,1) both",
-  },
-  bubble: {
-    maxWidth: "82%", padding: "10px 13px", borderRadius: 18,
-    fontSize: 13, lineHeight: 1.6, wordBreak: "break-word",
-  },
-  agentBubble: {
-    background: "#fff", color: "#1a2a40", borderBottomLeftRadius: 5,
-    boxShadow: "0 1px 6px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.04)",
-  },
-  userBubble: {
-    background: "linear-gradient(135deg, #0176D3 0%, #014d94 100%)",
-    color: "#fff", borderBottomRightRadius: 5,
-    boxShadow: "0 3px 12px rgba(1,118,211,0.3)",
-  },
-  typingBubble: {
-    display: "flex", alignItems: "center", gap: 5,
-    padding: "12px 16px", minWidth: 58,
-  },
-  dot: {
-    display: "inline-block", width: 7, height: 7, borderRadius: "50%",
-    background: "#0176D3", animation: "dotPulse 1.3s ease-in-out infinite",
-  },
-  statusText: {
-    color: "#6b7a8d", fontSize: 12, fontStyle: "italic",
-  },
-  cursor: {
-    display: "inline-block", width: 2, height: 14,
-    background: "#0176D3", marginLeft: 2, verticalAlign: "middle",
-    borderRadius: 1, animation: "cursorBlink 0.8s ease-in-out infinite",
-  },
-  openReplyBtn: {
-    display: "flex", alignItems: "center", gap: 6,
-    marginTop: 10, padding: "7px 14px",
-    background: "linear-gradient(135deg, #0176D3, #014d94)",
-    color: "#fff", border: "none", borderRadius: 20,
-    fontSize: 12, fontWeight: 600, cursor: "pointer",
-    boxShadow: "0 2px 8px rgba(1,118,211,0.3)",
-    transition: "opacity 0.15s ease",
-    width: "fit-content",
-  },
-  ts: {
-    fontSize: 9.5, marginTop: 5, textAlign: "right" as const, letterSpacing: "0.2px",
-  },
-  inputBar: {
-    display: "flex", alignItems: "center", gap: 8,
-    padding: "10px 12px", borderTop: "1px solid #e2eaf3",
-    background: "#fff", flexShrink: 0,
-    transition: "box-shadow 0.2s ease",
-    boxShadow: "0 -2px 10px rgba(0,0,0,0.04)",
-  },
-  inputBarFocused: {
-    boxShadow: "0 -2px 16px rgba(1,118,211,0.1)",
-  },
-  input: {
-    flex: 1, padding: "10px 16px", borderRadius: 24,
-    border: "1.5px solid #d6e2f0", fontSize: 13,
-    outline: "none", background: "#f7fafd", color: "#1a2a40",
-    transition: "border-color 0.2s ease, box-shadow 0.2s ease",
-  },
-  inputFocused: {
-    borderColor: "#0176D3",
-    boxShadow: "0 0 0 3px rgba(1,118,211,0.1)",
-    background: "#fff",
-  },
-  sendBtn: {
-    width: 38, height: 38, borderRadius: "50%", border: "none",
-    cursor: "pointer", display: "flex", alignItems: "center",
-    justifyContent: "center", flexShrink: 0,
-    transition: "transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.15s ease",
-  },
-  sendBtnActive: {
-    background: "linear-gradient(135deg, #0176D3, #014d94)",
-    color: "#fff", boxShadow: "0 3px 12px rgba(1,118,211,0.4)",
-  },
-  sendBtnOff: {
-    background: "#e2eaf3", color: "#94a3b8",
-    boxShadow: "none", cursor: "not-allowed",
-  },
+  wrapper:   { display:"flex", flexDirection:"column", flex:1, overflow:"hidden", position:"relative", background:"#f0f4f9" },
+  messages:  { flex:1, overflowY:"auto", padding:"14px 12px 10px", display:"flex", flexDirection:"column", gap:12 },
+  row:       { display:"flex", alignItems:"flex-end", gap:8, animation:"msgIn 0.25s cubic-bezier(0.22,1,0.36,1) both" },
+  bubble:    { maxWidth:"80%", padding:"10px 13px", borderRadius:18, fontSize:13, lineHeight:1.6, wordBreak:"break-word" },
+  agentBubble: { background:"#fff", color:"#1a2a40", borderBottomLeftRadius:5, boxShadow:"0 1px 6px rgba(0,0,0,0.07),0 0 0 1px rgba(0,0,0,0.04)" },
+  userBubble:  { background:"linear-gradient(135deg,#0176D3 0%,#014d94 100%)", color:"#fff", borderBottomRightRadius:5, boxShadow:"0 3px 12px rgba(1,118,211,0.3)" },
+  typingBubble:{ display:"flex", alignItems:"center", gap:5, padding:"12px 16px", minWidth:58 },
+  dot:         { display:"inline-block", width:7, height:7, borderRadius:"50%", background:"#0176D3", animation:"dotPulse 1.3s ease-in-out infinite" },
+  statusText:  { color:"#6b7a8d", fontSize:12, fontStyle:"italic" },
+  cursor:      { display:"inline-block", width:2, height:14, background:"#0176D3", marginLeft:2, verticalAlign:"middle", borderRadius:1, animation:"cursorBlink 0.8s ease-in-out infinite" },
+  openReplyBtn:{ display:"flex", alignItems:"center", gap:6, marginTop:10, padding:"7px 14px", background:"linear-gradient(135deg,#0176D3,#014d94)", color:"#fff", border:"none", borderRadius:20, fontSize:12, fontWeight:600, cursor:"pointer", boxShadow:"0 2px 8px rgba(1,118,211,0.3)", width:"fit-content" },
+  copyBtn:     { background:"none", border:"none", cursor:"pointer", padding:4, display:"flex", alignItems:"center", flexShrink:0, opacity:0.7, borderRadius:6 },
+  ts:          { fontSize:9.5, marginTop:5, textAlign:"right" as const, letterSpacing:"0.2px" },
+  undoToast:   { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", background:"#032D60", flexShrink:0, animation:"slideUp 0.2s ease" },
+  undoText:    { color:"rgba(255,255,255,0.85)", fontSize:12 },
+  undoBtn:     { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)", color:"#fff", borderRadius:8, padding:"4px 12px", fontSize:12, fontWeight:600, cursor:"pointer" },
+  inputBar:    { display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderTop:"1px solid #e2eaf3", background:"#fff", flexShrink:0, transition:"box-shadow 0.2s ease", boxShadow:"0 -2px 10px rgba(0,0,0,0.04)" },
+  inputBarFocused: { boxShadow:"0 -2px 16px rgba(1,118,211,0.1)" },
+  input:       { flex:1, padding:"10px 16px", borderRadius:24, border:"1.5px solid #d6e2f0", fontSize:13, outline:"none", background:"#f7fafd", color:"#1a2a40", transition:"border-color 0.2s ease,box-shadow 0.2s ease" },
+  inputFocused:{ borderColor:"#0176D3", boxShadow:"0 0 0 3px rgba(1,118,211,0.1)", background:"#fff" },
+  sendBtn:     { width:38, height:38, borderRadius:"50%", border:"none", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, transition:"transform 0.15s cubic-bezier(0.34,1.56,0.64,1),box-shadow 0.15s ease" },
+  sendBtnActive:{ background:"linear-gradient(135deg,#0176D3,#014d94)", color:"#fff", boxShadow:"0 3px 12px rgba(1,118,211,0.4)" },
+  sendBtnOff:  { background:"#e2eaf3", color:"#94a3b8", boxShadow:"none", cursor:"not-allowed" },
 };

@@ -1,13 +1,10 @@
 import { Router, Request, Response } from "express";
 import { runAgent, executeConfirmed, ConversationMessage, EmailCtx } from "../claude/agentHandler";
-import { ChatRequest, ChatResponse } from "../types/chat";
+import { ChatRequest, ChatResponse, UndoToken } from "../types/chat";
 
 const router = Router();
 
-interface SessionState {
-  history: ConversationMessage[];
-}
-
+interface SessionState { history: ConversationMessage[] }
 const sessions = new Map<string, SessionState>();
 
 router.post("/", async (req: Request, res: Response) => {
@@ -19,20 +16,38 @@ router.post("/", async (req: Request, res: Response) => {
   }
 
   const email: EmailCtx = {
-    subject:     body.emailContext.subject,
-    from:        body.emailContext.from,
-    to:          body.emailContext.to,
-    cc:          body.emailContext.cc,
+    subject: body.emailContext.subject,
+    from:    body.emailContext.from,
+    to:      body.emailContext.to,
+    cc:      body.emailContext.cc,
     bodyPreview: body.emailContext.bodyPreview ?? "",
     attachments: body.emailContext.attachments,
   };
 
   try {
-    // ── Confirmed write action ────────────────────────────────────────────────
-    if (body.confirmed && body.proposedAction) {
-      const payload = body.proposedAction as Record<string, unknown>;
-      const reply = await executeConfirmed(payload);
-      res.json({ reply, sessionId: body.sessionId ?? "", requiresConfirm: false } as ChatResponse);
+    // ── Confirmed write actions (single or multi) ─────────────────────────────
+    if (body.confirmed) {
+      const payloads = body.proposedActions
+        ? (body.proposedActions as Record<string, unknown>[])
+        : body.proposedAction
+          ? [body.proposedAction as Record<string, unknown>]
+          : [];
+
+      const replies: string[]    = [];
+      const undoTokens: UndoToken[] = [];
+
+      for (const payload of payloads) {
+        const { reply, undoToken } = await executeConfirmed(payload);
+        replies.push(reply);
+        if (undoToken) undoTokens.push(undoToken);
+      }
+
+      res.json({
+        reply: replies.join("\n\n"),
+        sessionId: body.sessionId ?? "",
+        requiresConfirm: false,
+        undoTokens: undoTokens.length ? undoTokens : undefined,
+      } as ChatResponse);
       return;
     }
 
@@ -41,7 +56,6 @@ router.post("/", async (req: Request, res: Response) => {
     const state = sessions.get(sessionId) ?? { history: [] };
 
     const { reply, updatedHistory } = await runAgent(body.userMessage, email, state.history);
-
     state.history = updatedHistory;
     sessions.set(sessionId, state);
 
@@ -54,7 +68,5 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// Purge sessions every 30 min
 setInterval(() => sessions.clear(), 30 * 60 * 1000);
-
 export default router;

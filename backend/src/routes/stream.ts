@@ -48,11 +48,11 @@ router.post("/", async (req: Request, res: Response) => {
         state.history = event.updatedHistory;
         sessions.set(sessionId, state);
         send({
-          type:           "done",
-          reply:          event.reply.reply,
+          type:            "done",
+          reply:           event.reply.reply,
           sessionId,
           requiresConfirm: event.reply.requiresConfirm,
-          proposedAction:  event.reply.proposedAction,
+          proposedActions: event.reply.proposedActions,
           draftBody:       event.reply.draftBody,
         });
       } else {

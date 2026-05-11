@@ -36,6 +36,12 @@ const Icons = {
       <polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>
     </svg>
   ),
+  logemail: (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+      <polyline points="22,6 12,13 2,6"/>
+    </svg>
+  ),
   meeting: (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
@@ -56,11 +62,12 @@ export interface Chip {
 export const DEFAULT_CHIPS: Chip[] = [
   { id: "find",     label: "Find project",  icon: "find",     message: "Find the project related to this email" },
   { id: "summary",  label: "Get summary",   icon: "summary",  message: "Give me a summary of this project" },
-  { id: "all",      label: "All projects",  icon: "projects", message: "List all my Salesforce projects with their end dates" },
+  { id: "logemail", label: "Log email",     icon: "logemail", message: "Log this entire email as an activity on the related Salesforce project" },
   { id: "date",     label: "Update date",   icon: "calendar", message: "Update the project end date based on this email" },
   { id: "note",     label: "Log a note",    icon: "note",     message: "Log a note on the project about this email" },
   { id: "meeting",  label: "Schedule meet", icon: "meeting",  message: "Schedule a meeting with the people on this email" },
   { id: "reply",    label: "Draft reply",   icon: "reply",    message: "Draft a reply to this email based on the project status" },
+  { id: "all",      label: "All projects",  icon: "projects", message: "List all my Salesforce projects with their end dates" },
 ];
 
 interface Props {

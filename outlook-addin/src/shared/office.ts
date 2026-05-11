@@ -58,7 +58,7 @@ export function getEmailContext(): Promise<EmailContext> {
           from,
           to,
           cc: cc || undefined,
-          bodyPreview: result.value.slice(0, 500).trim(),
+          bodyPreview: result.value.slice(0, 3000).trim(),
           attachments,
         });
       });

@@ -21,6 +21,8 @@ router.post("/", async (req: Request, res: Response) => {
   const email: EmailCtx = {
     subject:     body.emailContext.subject,
     from:        body.emailContext.from,
+    to:          body.emailContext.to,
+    cc:          body.emailContext.cc,
     bodyPreview: body.emailContext.bodyPreview ?? "",
     attachments: body.emailContext.attachments,
   };

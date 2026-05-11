@@ -9,6 +9,7 @@ export interface EmailContext {
   subject: string;
   from: string;
   to: string;
+  cc?: string;
   bodyPreview: string;
   attachments?: EmailAttachment[];
 }

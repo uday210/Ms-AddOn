@@ -2,6 +2,7 @@ export interface EmailContext {
   subject: string;
   from: string;
   to: string;
+  cc?: string;
   bodyPreview: string;
   attachments?: EmailAttachment[];
 }
@@ -38,6 +39,11 @@ export function getEmailContext(): Promise<EmailContext> {
           .map((r: Office.EmailAddressDetails) => r.emailAddress)
           .join(", ");
 
+        const ccRecipients = item.cc ?? [];
+        const cc = ccRecipients
+          .map((r: Office.EmailAddressDetails) => r.emailAddress)
+          .join(", ");
+
         const attachments: EmailAttachment[] = (item.attachments ?? [])
           .filter((a: Office.AttachmentDetails) => !a.isInline)
           .map((a: Office.AttachmentDetails) => ({
@@ -51,6 +57,7 @@ export function getEmailContext(): Promise<EmailContext> {
           subject: item.subject ?? "",
           from,
           to,
+          cc: cc || undefined,
           bodyPreview: result.value.slice(0, 500).trim(),
           attachments,
         });
@@ -78,4 +85,30 @@ export function getAttachmentContent(attachmentId: string): Promise<string> {
 
 export function openReplyWithBody(body: string): void {
   Office.context.mailbox.item?.displayReplyForm({ htmlBody: body });
+}
+
+export interface MeetingFormOptions {
+  subject: string;
+  requiredAttendees: string[];
+  optionalAttendees?: string[];
+  startDate: string;   // YYYY-MM-DD
+  startTime: string;   // HH:MM (24h)
+  durationMinutes: number;
+  agenda: string;
+}
+
+export function openMeetingForm(opts: MeetingFormOptions): void {
+  const [year, month, day] = opts.startDate.split("-").map(Number);
+  const [hour, minute] = opts.startTime.split(":").map(Number);
+  const start = new Date(year, month - 1, day, hour, minute);
+  const end = new Date(start.getTime() + opts.durationMinutes * 60_000);
+
+  Office.context.mailbox.displayNewAppointmentForm({
+    subject: opts.subject,
+    requiredAttendees: opts.requiredAttendees,
+    optionalAttendees: opts.optionalAttendees ?? [],
+    start,
+    end,
+    body: opts.agenda,
+  });
 }

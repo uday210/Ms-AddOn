@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { sendMessage, attachFile } from "../../shared/api";
 import { MarkdownText } from "../../shared/markdown";
-import { EmailContext, getAttachmentContent } from "../../shared/office";
+import { EmailContext, getAttachmentContent, openMeetingForm } from "../../shared/office";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SuggestionChips } from "./SuggestionChips";
 
@@ -78,6 +78,24 @@ export function ChatPanel({ emailContext }: Props) {
     setLoading(true);
 
     try {
+      if (payload.action === "schedule_meeting") {
+        openMeetingForm({
+          subject:           payload.subject as string,
+          requiredAttendees: payload.requiredAttendees as string[],
+          optionalAttendees: payload.optionalAttendees as string[] | undefined,
+          startDate:         payload.proposedDate as string,
+          startTime:         payload.startTime as string,
+          durationMinutes:   payload.durationMinutes as number,
+          agenda:            payload.agenda as string,
+        });
+        setMessages((prev) => [...prev, {
+          id: crypto.randomUUID(), role: "agent",
+          text: `Meeting form opened in Outlook! Review the details and hit **Send** when you're ready.`,
+          ts: Date.now(),
+        }]);
+        return;
+      }
+
       if (payload.action === "attach_file") {
         const base64Content = await getAttachmentContent(payload.attachmentId as string);
         await attachFile({

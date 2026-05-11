@@ -68,6 +68,23 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "propose_schedule_meeting",
+    description: "Propose scheduling a meeting with the email participants. Opens Outlook's native meeting composer pre-filled with attendees, subject, date/time, and agenda. Use when the user asks to schedule, set up, or book a meeting.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subject:            { type: "string",  description: "Meeting subject line" },
+        requiredAttendees:  { type: "array",   items: { type: "string" }, description: "Email addresses of required attendees (typically From + To)" },
+        optionalAttendees:  { type: "array",   items: { type: "string" }, description: "Email addresses of optional attendees (CC recipients)" },
+        proposedDate:       { type: "string",  description: "Suggested meeting date YYYY-MM-DD. Pick a sensible future date based on context." },
+        startTime:          { type: "string",  description: "Start time HH:MM in 24h format e.g. 14:00" },
+        durationMinutes:    { type: "number",  description: "Duration in minutes, e.g. 30 or 60" },
+        agenda:             { type: "string",  description: "Meeting agenda or body text summarising the purpose" },
+      },
+      required: ["subject", "requiredAttendees", "proposedDate", "startTime", "durationMinutes", "agenda"],
+    },
+  },
+  {
     name: "propose_attach_file",
     description: "Propose attaching an email attachment to a Salesforce project. Use only when the email has attachments listed in the context and the user wants to attach one. Shows a confirmation dialog before uploading.",
     input_schema: {
@@ -94,6 +111,8 @@ export interface EmailAttachment {
 export interface EmailCtx {
   subject: string;
   from: string;
+  to?: string;
+  cc?: string;
   bodyPreview: string;
   attachments?: EmailAttachment[];
 }
@@ -123,8 +142,10 @@ export async function executeConfirmed(payload: Record<string, unknown>): Promis
     return `Note logged on **${payload.projectName}**: "${payload.noteText}"`;
   }
   if (payload.action === "attach_file") {
-    // File upload is handled client-side via /api/attach — this path should not be reached
     return `File "${payload.attachmentName}" attachment was handled by the client.`;
+  }
+  if (payload.action === "schedule_meeting") {
+    return `Meeting scheduling is handled client-side via Office.js.`;
   }
   return "Unknown action.";
 }
@@ -139,7 +160,9 @@ export async function runAgent(
   const attachmentList = email.attachments?.length
     ? `\nAttachments:\n${email.attachments.map((a) => `  - id="${a.id}" name="${a.name}" type="${a.contentType}" size=${a.size}`).join("\n")}`
     : "";
-  const emailContext = `Email context:\nSubject: ${email.subject}\nFrom: ${email.from}${attachmentList}\n\n${email.bodyPreview}`;
+  const ccLine = email.cc ? `\nCC: ${email.cc}` : "";
+  const toLine = email.to ? `\nTo: ${email.to}` : "";
+  const emailContext = `Email context:\nSubject: ${email.subject}\nFrom: ${email.from}${toLine}${ccLine}${attachmentList}\n\n${email.bodyPreview}`;
 
   // Build messages: history + current user turn
   const messages: ConversationMessage[] = [
@@ -235,6 +258,24 @@ export async function runAgent(
             },
           };
           resultText = "Proposal recorded. Tell the user what you're going to do and ask them to confirm.";
+
+        } else if (block.name === "propose_schedule_meeting") {
+          const startDT = `${input.proposedDate} at ${input.startTime}`;
+          pendingProposal = {
+            label: "Schedule Meeting",
+            description: `Schedule "${input.subject}" on ${startDT} (${input.durationMinutes} min) with ${(input.requiredAttendees as string[]).join(", ")}`,
+            payload: {
+              action:             "schedule_meeting",
+              subject:            input.subject,
+              requiredAttendees:  input.requiredAttendees,
+              optionalAttendees:  input.optionalAttendees ?? [],
+              proposedDate:       input.proposedDate,
+              startTime:          input.startTime,
+              durationMinutes:    input.durationMinutes,
+              agenda:             input.agenda,
+            },
+          };
+          resultText = "Proposal recorded. Tell the user the meeting details and ask them to confirm to open the invite form.";
 
         } else if (block.name === "propose_attach_file") {
           pendingProposal = {

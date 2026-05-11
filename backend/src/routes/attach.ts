@@ -5,10 +5,9 @@ const router = Router();
 
 router.post("/", async (req, res) => {
   try {
-    const { projectId, attachmentName, contentType, base64Content } = req.body as {
+    const { projectId, attachmentName, base64Content } = req.body as {
       projectId: string;
       attachmentName: string;
-      contentType: string;
       base64Content: string;
     };
 
@@ -17,12 +16,7 @@ router.post("/", async (req, res) => {
       return;
     }
 
-    const cvId = await sfAttachFile(
-      projectId,
-      attachmentName,
-      contentType ?? "application/octet-stream",
-      base64Content
-    );
+    const cvId = await sfAttachFile(projectId, attachmentName, base64Content);
 
     res.json({ success: true, contentVersionId: cvId });
   } catch (err: unknown) {

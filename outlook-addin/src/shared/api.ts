@@ -93,6 +93,49 @@ export async function performUndo(tokens: UndoToken[]): Promise<string[]> {
   return results;
 }
 
+// ── Conversation history (server-side, cross-device) ─────────────────────────
+export interface StoredMessage {
+  id: string;
+  role: "user" | "agent";
+  text: string;
+  ts: number;
+  draftBody?: string;
+}
+
+export async function loadHistory(emailKey: string): Promise<{ messages: StoredMessage[]; sessionId?: string }> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/history/load`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emailKey }),
+    });
+    if (!res.ok) return { messages: [] };
+    return res.json() as Promise<{ messages: StoredMessage[]; sessionId?: string }>;
+  } catch {
+    return { messages: [] };
+  }
+}
+
+export async function saveHistory(emailKey: string, messages: StoredMessage[], sessionId?: string): Promise<void> {
+  try {
+    await fetch(`${BACKEND_URL}/api/history/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emailKey, messages, sessionId }),
+    });
+  } catch { /* best-effort */ }
+}
+
+export async function clearHistory(emailKey: string): Promise<void> {
+  try {
+    await fetch(`${BACKEND_URL}/api/history/clear`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emailKey }),
+    });
+  } catch { /* best-effort */ }
+}
+
 // ── File attachment ───────────────────────────────────────────────────────────
 export interface AttachRequest {
   projectId: string;

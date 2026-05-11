@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { streamChat, sendMessage, attachFile, performUndo, ProposedAction, UndoToken } from "../../shared/api";
+import { streamChat, sendMessage, attachFile, performUndo, loadHistory, saveHistory, clearHistory, ProposedAction, UndoToken } from "../../shared/api";
 import { MarkdownText } from "../../shared/markdown";
 import { EmailContext, getAttachmentContent, openMeetingForm, openReplyWithBody } from "../../shared/office";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -17,6 +17,10 @@ interface Props {
   emailContext: EmailContext | null;
 }
 
+function emailKey(ctx: EmailContext) {
+  return `${ctx.from}::${ctx.subject}`;
+}
+
 export function ChatPanel({ emailContext }: Props) {
   const [messages, setMessages]             = useState<Message[]>([]);
   const [input, setInput]                   = useState("");
@@ -29,8 +33,11 @@ export function ChatPanel({ emailContext }: Props) {
   const [undoTokens, setUndoTokens]         = useState<UndoToken[]>([]);
   const [hoveredMsgId, setHoveredMsgId]     = useState<string | null>(null);
   const [copied, setCopied]                 = useState<string | null>(null);
+  const [historyLoaded, setHistoryLoaded]   = useState(false);
+  const [hasRestoredHistory, setHasRestoredHistory] = useState(false);
 
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const bottomRef    = useRef<HTMLDivElement>(null);
+  const savedRef     = useRef(false); // gate: don't save until after initial load
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -43,14 +50,35 @@ export function ChatPanel({ emailContext }: Props) {
     return () => clearTimeout(t);
   }, [undoTokens]);
 
-  // Proactive analysis on mount
+  // Restore conversation from server on mount
   useEffect(() => {
     if (!emailContext) return;
+    const key = emailKey(emailContext);
+    loadHistory(key).then(({ messages: saved, sessionId: sid }) => {
+      if (saved && saved.length > 0) {
+        setMessages(saved as Message[]);
+        if (sid) setSessionId(sid);
+        setHasRestoredHistory(true);
+      }
+      savedRef.current = true;
+      setHistoryLoaded(true);
+    });
+  }, []);
+
+  // Proactive analysis — only when no prior history exists
+  useEffect(() => {
+    if (!historyLoaded || hasRestoredHistory || !emailContext) return;
     runStream(
       "Analyse this email: classify urgency (🔴 Urgent / 🟡 Normal / 🟢 Low), summarise what the sender is asking for, list any action items or deadlines, and recommend the single most useful action I can take right now. Be concise.",
       true
     );
-  }, []);
+  }, [historyLoaded]);
+
+  // Persist conversation to server after every turn
+  useEffect(() => {
+    if (!savedRef.current || !emailContext || messages.length === 0) return;
+    saveHistory(emailKey(emailContext), messages, sessionId);
+  }, [messages, sessionId]);
 
   // ── Core streaming function ───────────────────────────────────────────────
   async function runStream(userMessage: string, silent = false) {
@@ -170,6 +198,20 @@ export function ChatPanel({ emailContext }: Props) {
     }
   }
 
+  // ── Clear history ─────────────────────────────────────────────────────────
+  async function handleClearHistory() {
+    if (!emailContext) return;
+    await clearHistory(emailKey(emailContext));
+    setMessages([]);
+    setSessionId(undefined);
+    setHasRestoredHistory(false);
+    // Re-run proactive analysis on a clean slate
+    runStream(
+      "Analyse this email: classify urgency (🔴 Urgent / 🟡 Normal / 🟢 Low), summarise what the sender is asking for, list any action items or deadlines, and recommend the single most useful action I can take right now. Be concise.",
+      true
+    );
+  }
+
   // ── Copy ──────────────────────────────────────────────────────────────────
   function copyMsg(id: string, text: string) {
     navigator.clipboard.writeText(text).then(() => {
@@ -187,6 +229,14 @@ export function ChatPanel({ emailContext }: Props) {
       <SuggestionChips onChipClick={send} disabled={!isReady} />
 
       <div style={s.messages}>
+        {/* Restored history banner */}
+        {hasRestoredHistory && messages.length > 0 && (
+          <div style={s.historyBanner}>
+            <span>↩ Conversation restored</span>
+            <button style={s.clearBtn} onClick={handleClearHistory}>Clear</button>
+          </div>
+        )}
+
         {messages.map((msg) => (
           <div
             key={msg.id}
@@ -325,6 +375,8 @@ const s: Record<string, React.CSSProperties> = {
   openReplyBtn:{ display:"flex", alignItems:"center", gap:6, marginTop:10, padding:"7px 14px", background:"linear-gradient(135deg,#0176D3,#014d94)", color:"#fff", border:"none", borderRadius:20, fontSize:12, fontWeight:600, cursor:"pointer", boxShadow:"0 2px 8px rgba(1,118,211,0.3)", width:"fit-content" },
   copyBtn:     { background:"none", border:"none", cursor:"pointer", padding:4, display:"flex", alignItems:"center", flexShrink:0, opacity:0.7, borderRadius:6 },
   ts:          { fontSize:9.5, marginTop:5, textAlign:"right" as const, letterSpacing:"0.2px" },
+  historyBanner: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"6px 12px", background:"#f0f6ff", borderRadius:10, border:"1px solid #d6e8ff", fontSize:11, color:"#4a6a8a", marginBottom:4 },
+  clearBtn:    { background:"none", border:"none", color:"#0176D3", fontSize:11, fontWeight:600, cursor:"pointer", padding:"2px 6px", borderRadius:6 },
   undoToast:   { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", background:"#032D60", flexShrink:0, animation:"slideUp 0.2s ease" },
   undoText:    { color:"rgba(255,255,255,0.85)", fontSize:12 },
   undoBtn:     { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)", color:"#fff", borderRadius:8, padding:"4px 12px", fontSize:12, fontWeight:600, cursor:"pointer" },

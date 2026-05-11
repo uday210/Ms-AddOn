@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { sendMessage } from "../../shared/api";
+import { getTokenInfo, createAgentSession, sendAgentMessage, AgentSession, TokenInfo } from "../../shared/agentforceClient";
 import { EmailContext } from "../../shared/office";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SuggestionChips } from "./SuggestionChips";
@@ -27,6 +28,8 @@ export function ChatPanel({ emailContext }: Props) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | undefined>();
+  // Direct Agentforce session (browser → api.salesforce.com, bypasses Railway)
+  const directSession = useRef<AgentSession | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<{
     description: string;
     payload: object;
@@ -37,6 +40,25 @@ export function ChatPanel({ emailContext }: Props) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  async function sendDirect(userMessage: string): Promise<string> {
+    let sess = directSession.current;
+
+    if (!sess) {
+      // First message — get token and create session
+      const info: TokenInfo = await getTokenInfo();
+      const sfSessionId = await createAgentSession(info);
+      // Seed with email context so the agent has background
+      const ctx = `Email context:\nSubject: ${emailContext!.subject}\nFrom: ${emailContext!.from}\n\n${emailContext!.bodyPreview ?? ""}`;
+      await sendAgentMessage(info, sfSessionId, ctx, 1);
+      sess = { ...info, sessionId: sfSessionId, sequenceId: 1 };
+      directSession.current = sess;
+    }
+
+    sess.sequenceId += 1;
+    const reply = await sendAgentMessage(sess, sess.sessionId, userMessage, sess.sequenceId);
+    return reply;
+  }
 
   async function send(userMessage: string) {
     if (!userMessage.trim() || loading || !emailContext) return;
@@ -52,25 +74,26 @@ export function ChatPanel({ emailContext }: Props) {
     setLoading(true);
 
     try {
-      const res = await sendMessage({
-        emailContext,
-        userMessage: userMessage.trim(),
-        sessionId,
-      });
+      let replyText: string;
 
-      setSessionId(res.sessionId);
-
-      if (res.requiresConfirm && res.proposedAction) {
-        setPendingConfirm({
-          description: res.proposedAction.description,
-          payload: res.proposedAction.payload,
-        });
+      // Try direct browser→Salesforce path first (bypasses Railway network restrictions)
+      try {
+        replyText = await sendDirect(userMessage.trim());
+      } catch (directErr) {
+        console.warn("[ChatPanel] Direct Agentforce failed, falling back to backend:", (directErr as Error).message);
+        // Fall back to backend /chat
+        const res = await sendMessage({ emailContext, userMessage: userMessage.trim(), sessionId });
+        setSessionId(res.sessionId);
+        if (res.requiresConfirm && res.proposedAction) {
+          setPendingConfirm({ description: res.proposedAction.description, payload: res.proposedAction.payload });
+        }
+        replyText = res.reply;
       }
 
       const agentMsg: Message = {
         id: crypto.randomUUID(),
         role: "agent",
-        text: res.reply,
+        text: replyText,
         ts: Date.now(),
       };
       setMessages((prev) => [...prev, agentMsg]);

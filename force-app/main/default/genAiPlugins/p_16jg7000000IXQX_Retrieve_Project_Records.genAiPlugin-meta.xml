@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GenAiPlugin xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <canEscalate>false</canEscalate>
+    <description>This topic is selected when the user wants to search for and display project records linked to customer emails in Outlook.</description>
+    <developerName>p_16jg7000000IXQX_Retrieve_Project_Records</developerName>
+    <genAiFunctions>
+        <functionName>SalesCopilot_FindProject_16jg7000000ITA1</functionName>
+    </genAiFunctions>
+    <genAiFunctions>
+        <functionName>EmployeeCopilot__AnswerQuestionsWithKnowledge</functionName>
+    </genAiFunctions>
+    <genAiPluginInstructions>
+        <description>If the user requests to find or display a project record, use the &apos;SalesCopilot_FindProject_16jg7000000ITA1&apos; action.</description>
+        <developerName>instruction_0</developerName>
+        <language xsi:nil="true"/>
+        <masterLabel>instruction_0</masterLabel>
+        <sortOrder>0</sortOrder>
+    </genAiPluginInstructions>
+    <language>en_US</language>
+    <localDeveloperName>p_16jg7000000IXQX_Retrieve_Project_Records</localDeveloperName>
+    <masterLabel>Retrieve Project Records</masterLabel>
+    <pluginType>Topic</pluginType>
+    <scope>Your job is to only retrieve and display project records linked to customer emails. You cannot provide summaries or make updates to project records.</scope>
+</GenAiPlugin>

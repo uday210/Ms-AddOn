@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GenAiPlugin xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <canEscalate>false</canEscalate>
+    <description>This topic is selected when the user wants to modify the start or end date of a specific project.</description>
+    <developerName>p_16jg7000000IXQX_Update_Project_End_Dates</developerName>
+    <genAiFunctions>
+        <functionName>SalesCopilot_UpdateProjectDate_16jg7000000ITA1</functionName>
+    </genAiFunctions>
+    <genAiFunctions>
+        <functionName>EmployeeCopilot__AnswerQuestionsWithKnowledge</functionName>
+    </genAiFunctions>
+    <genAiPluginInstructions>
+        <description>If the user requests to update a project’s start or end date, use the &apos;SalesCopilot_UpdateProjectDate_16jg7000000ITA1&apos; action.</description>
+        <developerName>instruction_0</developerName>
+        <language xsi:nil="true"/>
+        <masterLabel>instruction_0</masterLabel>
+        <sortOrder>0</sortOrder>
+    </genAiPluginInstructions>
+    <genAiPluginInstructions>
+        <description>Always confirm the project name, field, old value, and new value with the user before executing the action.</description>
+        <developerName>instruction_1</developerName>
+        <language xsi:nil="true"/>
+        <masterLabel>instruction_1</masterLabel>
+        <sortOrder>0</sortOrder>
+    </genAiPluginInstructions>
+    <language>en_US</language>
+    <localDeveloperName>p_16jg7000000IXQX_Update_Project_End_Dates</localDeveloperName>
+    <masterLabel>Update Project End Dates</masterLabel>
+    <pluginType>Topic</pluginType>
+    <scope>Your job is to update the start or end date of a project as specified by the user. You must confirm the project name, field, old value, and new value with the user before making any updates.</scope>
+</GenAiPlugin>

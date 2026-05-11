@@ -33,4 +33,5 @@ export interface ChatResponse {
   sessionId: string;
   requiresConfirm: boolean;
   proposedAction?: ProposedAction;
+  draftBody?: string;
 }

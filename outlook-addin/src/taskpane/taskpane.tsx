@@ -51,7 +51,10 @@ function App() {
         </div>
       )}
 
-      <ChatPanel emailContext={emailContext} />
+      <ChatPanel
+        key={emailContext ? `${emailContext.from}::${emailContext.subject}` : "loading"}
+        emailContext={emailContext}
+      />
     </div>
   );
 }

@@ -22,7 +22,4 @@ app.use(express.static(path.resolve(__dirname, "../../outlook-addin/public")));
 
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
-  if (!process.env.SF_AGENT_ID) {
-    console.log("[STUB MODE] No SF_AGENT_ID — returning mock responses");
-  }
 });
